@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import secrets
 import shutil
 from pathlib import Path
 
@@ -40,6 +41,8 @@ MODELS_DIR = Path(os.environ.get("LOCAL_MEMORY_MODELS", REPO_ROOT / "models"))
 DB_PATH = DATA_HOME / "index.db"
 THUMBS_DIR = DATA_HOME / "thumbs"
 SETTINGS_PATH = DATA_HOME / "settings.json"
+# Auth token (D-01): lives in the data home, never in the repo.
+TOKEN_PATH = DATA_HOME / "token"
 
 
 def is_cloud_synced(path: Path | str) -> bool:
@@ -50,11 +53,12 @@ def is_cloud_synced(path: Path | str) -> bool:
 
 def _repoint_data_home(home: Path) -> None:
     """Re-point the module-level path attributes at `home`."""
-    global DATA_HOME, DB_PATH, THUMBS_DIR, SETTINGS_PATH
+    global DATA_HOME, DB_PATH, THUMBS_DIR, SETTINGS_PATH, TOKEN_PATH
     DATA_HOME = home
     DB_PATH = home / "index.db"
     THUMBS_DIR = home / "thumbs"
     SETTINGS_PATH = home / "settings.json"
+    TOKEN_PATH = home / "token"
 
 
 def migrate_home() -> str | None:
@@ -122,6 +126,33 @@ def load_settings() -> dict:
 def save_settings(settings: dict) -> None:
     ensure_dirs()
     SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+
+
+def auth_token() -> str:
+    """Single token factory (D-01). Create-on-read, idempotent.
+
+    DEV-OVERRIDE RULE (pinned for the whole project): the LOCAL_MEMORY_TOKEN
+    environment variable overrides the persisted token file. This is the only
+    sanctioned override path — it exists for the Vite dev proxy (ui/vite.config.ts)
+    and tests; never log or embed the token value anywhere else.
+    """
+    override = os.environ.get("LOCAL_MEMORY_TOKEN")
+    if override:
+        return override
+    if TOKEN_PATH.exists():
+        token = TOKEN_PATH.read_text(encoding="utf-8").strip()
+        if token:
+            return token
+    token = secrets.token_urlsafe(32)
+    ensure_dirs()
+    # Best-effort restrictive ACL (0600): the user-profile data home is already
+    # per-user on Windows; os.open keeps the file from being world-readable.
+    fd = os.open(TOKEN_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, token.encode("utf-8"))
+    finally:
+        os.close(fd)
+    return token
 
 
 def watched_folders() -> list[str]:
