@@ -87,6 +87,11 @@ export const api = {
   resume: () => req<{ paused: boolean }>('/api/resume', { method: 'POST' }),
   health: () => req<HealthReport>('/api/health'),
   wipe: () => req<{ wiped: Record<string, boolean> }>('/api/wipe', { method: 'POST' }),
+  openFile: (fileId: number) =>
+    req<{ opened: boolean }>('/api/open', {
+      method: 'POST',
+      body: JSON.stringify({ file_id: fileId }),
+    }),
 }
 
 export function fmtBytes(n: number): string {

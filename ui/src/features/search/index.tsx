@@ -11,6 +11,7 @@ import {
   FolderOpen,
   Pause,
   Play,
+  ExternalLink,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -258,6 +259,19 @@ function snippetPrefix(source: SearchResult['snippet_source']): string {
 function ResultRow({ r }: { r: SearchResult }) {
   const via = r.matched_via
   const snippetBody = r.highlight ?? r.snippet
+  const [openState, setOpenState] = useState<'idle' | 'pending' | 'error'>('idle')
+
+  const openFile = async () => {
+    setOpenState('pending')
+    try {
+      await api.openFile(r.file_id)
+      setOpenState('idle')
+    } catch {
+      // 404 / 410 / network error: brief inline failure state, no toast spam.
+      setOpenState('error')
+    }
+  }
+
   return (
     <Card className='flex gap-4 p-4'>
       {r.kind === 'image' ? (
@@ -293,8 +307,24 @@ function ResultRow({ r }: { r: SearchResult }) {
             <MarkedSnippet text={snippetBody} />
           </p>
         )}
-        <p className='mt-1 text-xs text-muted-foreground'>
-          {fmtBytes(r.size_bytes)} · {fmtDate(r.mtime)}
+        <p className='mt-1 flex items-center gap-1 text-xs text-muted-foreground'>
+          <span>
+            {fmtBytes(r.size_bytes)} · {fmtDate(r.mtime)}
+          </span>
+          <Button
+            size='sm'
+            variant='ghost'
+            className='h-6 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground'
+            disabled={openState === 'pending'}
+            onClick={openFile}
+          >
+            {openState === 'pending' ? (
+              <Loader2 className='size-3 animate-spin' />
+            ) : (
+              <ExternalLink className='size-3' />
+            )}
+            {openState === 'error' ? 'Unavailable' : 'Open'}
+          </Button>
         </p>
       </div>
     </Card>
