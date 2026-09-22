@@ -505,6 +505,13 @@ def test_clip_visual_plant_found_snippet_quotes_ocr():
     from PIL import Image
 
     from local_memory.embeddings import get_image_embedder
+    from local_memory.embeddings.clip_image import _HashImageEmbedder
+
+    # Transient QNN/HTP session contention can silently degrade the image
+    # embedder to hash space (see .planning/.../03-VERIFICATION.md); a hash
+    # vector vs real-CLIP query vector makes the visual assertion meaningless.
+    if isinstance(get_image_embedder(), _HashImageEmbedder):
+        pytest.skip("image embedder fell back to hashing — visual test not meaningful")
 
     clip_home = Path(__file__).parent / ".tmpdata-quality-clip"
     old = (config.DATA_HOME, config.DB_PATH, config.THUMBS_DIR,

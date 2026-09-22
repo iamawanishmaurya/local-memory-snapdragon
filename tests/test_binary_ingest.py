@@ -152,7 +152,7 @@ class _FakeDecSession:
 
     def run(self, _outputs, _feed):
         logits = np.full((1, 1, 8), -10.0, dtype=np.float32)
-        seq = [5, 6, 2]  # "Hello", "world", EOS
+        seq = [5, 6, 5, 6, 5, 6, 2]  # "Hello world" x3 (must look like real text)
         idx = min(self._step, len(seq) - 1)
         logits[0, 0, seq[idx]] = 10.0
         self._step += 1

@@ -1,0 +1,33 @@
+# Local Memory — core runtime dependencies
+# Install: pip install -r requirements.txt
+
+# HTTP server + API
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.6
+
+# File watching
+watchdog>=4.0
+
+# ONNX inference (QNN Execution Provider ships with onnxruntime-qnn on Windows ARM).
+# NOTE: Windows ARM64 reports platform_machine == 'ARM64' (not 'aarch64'), so
+# both spellings are matched — otherwise NO onnxruntime gets installed there.
+onnxruntime>=1.17 ; platform_machine != 'aarch64' and platform_machine != 'ARM64' and platform_machine != 'arm64'
+onnxruntime-qnn>=1.17 ; platform_machine == 'aarch64' or platform_machine == 'ARM64' or platform_machine == 'arm64'
+
+# Numpy for vector math / brute-force fallback search
+numpy>=1.26
+
+# Text extraction (pymupdf: render-based OCR fallback for image-only PDFs)
+pypdf>=4.0
+pymupdf>=1.24
+python-docx>=1.1
+
+# Image handling (CLIP preprocessing, thumbnails)
+pillow>=10.2
+
+# OCR (heavy — install only on the target Snapdragon device or if needed)
+# easyocr>=1.7        # optional; see docs/NPU_SETUP.md
+
+# Model export to ONNX + QNN via Qualcomm AI Hub (setup-time only, needs network)
+# qai-hub>=0.10       # optional; see scripts/setup_models.py and docs/NPU_SETUP.md

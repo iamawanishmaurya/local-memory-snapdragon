@@ -26,6 +26,17 @@ def _read_text_file(path: Path) -> str:
         return ""
 
 
+def _has_real_text(text: str) -> bool:
+    """True when extracted text looks meaningful.
+
+    Some image-only PDFs (print-to-PDF output) still yield a few junk glyphs
+    per page from pypdf (':' , digits, boxes) — enough to defeat a plain
+    `text.strip()` check, but far below real prose. Require a minimum count
+    of alphanumeric characters before trusting the text layer.
+    """
+    return sum(ch.isalnum() for ch in text) >= 20
+
+
 def _read_pdf(path: Path) -> str:
     try:
         from pypdf import PdfReader
@@ -34,7 +45,7 @@ def _read_pdf(path: Path) -> str:
         size_ok = path.stat().st_size <= config.PDF_OCR_MAX_BYTES
         for i, page in enumerate(reader.pages):
             text = page.extract_text() or ""
-            if text.strip() or not size_ok:
+            if not size_ok or _has_real_text(text):
                 parts.append(text)
                 continue
             # Image-only page (scanned notes): route the embedded page image
@@ -42,7 +53,12 @@ def _read_pdf(path: Path) -> str:
             # text-free pages so a 300-page scan doesn't stall indexing.
             if i < config.PDF_OCR_MAX_PAGES:
                 ocr_text = _ocr_pdf_page(page)
-                if ocr_text:
+                if not _has_real_text(ocr_text):
+                    # Embedded-image OCR gave nothing usable — fall back to
+                    # rendering the page: print-to-PDF files embed no
+                    # decodable page images (or a tiny junk one).
+                    ocr_text = _ocr_pdf_page_render(path, i)
+                if _has_real_text(ocr_text):
                     text = ocr_text
             parts.append(text)
         return "\n".join(parts)
@@ -64,6 +80,67 @@ def _ocr_pdf_page(page) -> str:
         return ocr.ocr_pil(pil)
     except Exception:
         log.debug("pdf page image OCR failed", exc_info=True)
+        return ""
+
+
+def _ocr_pdf_page_render(path: Path, page_index: int) -> str:
+    """OCR a rasterized rendering of a PDF page (PyMuPDF, modest DPI).
+
+    Fallback for image-only PDFs whose embedded images pypdf cannot decode
+    (e.g. Windows print-to-PDF output). The OCR backends are line-level
+    models — a whole page squeezed to their input size yields garbage — so
+    the render is split into horizontal text bands (dark-pixel row runs)
+    and each band is OCR'd separately. '' on any failure; pymupdf itself is
+    an optional dependency so a missing wheel degrades silently.
+    """
+    try:
+        import io
+
+        try:
+            import pymupdf as fitz  # PyMuPDF — lazy/optional import
+        except ImportError:  # older wheels only expose the legacy name
+            import fitz
+        import numpy as np
+        from PIL import Image
+
+        from . import ocr
+        if not ocr.ocr_available():
+            return ""
+        with fitz.open(str(path)) as doc:
+            page = doc.load_page(page_index)
+            png = page.get_pixmap(dpi=150).tobytes("png")
+        pil = Image.open(io.BytesIO(png))
+        gray = np.asarray(pil.convert("L"))
+        dark_rows = (gray < 128).sum(axis=1)
+        # Text-line bands = runs of rows containing dark pixels, each padded,
+        # so the OCR model sees lines at near-native resolution.
+        bands: list[tuple[int, int]] = []
+        start = None
+        for y, count in enumerate(dark_rows):
+            if count > 5 and start is None:
+                start = y
+            elif count <= 5 and start is not None:
+                if y - start >= 10:
+                    bands.append((start, y))
+                start = None
+        if start is not None and len(dark_rows) - start >= 10:
+            bands.append((start, len(dark_rows)))
+        if not bands:  # blank page or odd render — try the full page once
+            return ocr.ocr_pil(pil)
+        w, h = pil.size
+        texts: list[str] = []
+        for y0, y1 in bands:
+            crop = pil.crop((0, max(0, y0 - 5), w, min(h, y1 + 5)))
+            text = ocr.ocr_pil(crop)
+            if text:
+                texts.append(text)
+        return "\n".join(texts)
+    except ImportError:
+        log.debug("pymupdf not installed — render-based PDF OCR skipped")
+        return ""
+    except Exception:
+        log.debug("pdf page render OCR failed for %s page %d",
+                  path, page_index, exc_info=True)
         return ""
 
 
