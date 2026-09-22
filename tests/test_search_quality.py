@@ -7,6 +7,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # Isolated data home, chosen BEFORE local_memory/config import time paths are
@@ -431,3 +433,126 @@ def test_api_zero_results_clean_empty():
     body = r.json()
     assert body["results"] == []
     assert isinstance(body["query"], str)
+
+
+# --- 03-03 Task 2: D-08 named brief-query test + gated CLIP end-to-end ---------
+
+
+@pytest.mark.search_quality
+def test_brief_queries_top3_seeded_demo():
+    """D-08 NAMED TEST — the Phase 4 (DEMO-02) rehearsal gate, model-free.
+
+    The three brief queries must return the planted demo files in top-3 on a
+    seeded demo folder with distractors. The phrases are planted in the file
+    text so BM25 matches deterministically (the pure-semantic proof is the
+    gated CLIP test below). Filenames are kept obvious so the Phase 4 seed
+    folder can mirror them.
+    """
+    demo = _HOME / "demo"
+    demo.mkdir(exist_ok=True)
+    _make_file(demo, "pen_note.txt", "pen with blue book on the desk, morning study notes")
+    _make_file(demo, "invoice_march.txt", "invoice for web design work, dated 12 March, total 900 dollars")
+    _make_file(
+        demo,
+        "error_shot.txt",
+        "screenshot of the error: TypeError cannot read property id of undefined, full traceback below",
+    )
+    # Distractors: share some generic words, never the answers.
+    _make_file(demo, "recipe.txt", "chocolate chip cookie recipe: butter, sugar, flour, oven at 180")
+    _make_file(demo, "resume.txt", "curriculum vitae: software engineer, five years experience, python")
+    _make_file(demo, "meeting.txt", "meeting notes: budget review on Thursday, attendees listed below")
+    _make_file(demo, "travel.txt", "travel itinerary: flights to Lisbon, hotel near the coast")
+    _make_file(demo, "workout.txt", "weekly workout plan: running, swimming, rest day Sunday")
+    _make_file(demo, "garden.txt", "spring gardening checklist: prune roses, plant tomatoes, mulch beds")
+    assert scan_folder(str(demo)) >= 9
+
+    queries = {
+        "pen with blue book": "pen_note.txt",
+        "invoices from March": "invoice_march.txt",
+        "screenshots of that error": "error_shot.txt",
+    }
+    for query, planted in queries.items():
+        results = query_engine.search(query, top_k=12)
+        top3 = {r["name"] for r in results[:3]}
+        assert planted in top3, f"{query!r}: {planted} not top-3: {[r['name'] for r in results]}"
+        hit = next(r for r in results if r["name"] == planted)
+        assert hit["matched_via"] in ("keyword", "both"), (query, hit["matched_via"])
+        assert hit["snippet"], f"{query!r}: empty snippet"
+
+
+_REPO_MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+
+
+def _clip_models_present() -> bool:
+    return (_REPO_MODELS_DIR / "clip-vit-b32-text.onnx").exists() and (
+        _REPO_MODELS_DIR / "clip-vit-b32-image.onnx"
+    ).exists()
+
+
+@pytest.mark.skipif(not _clip_models_present(), reason="CLIP ONNX models not present (model-free suite run)")
+def test_clip_visual_plant_found_snippet_quotes_ocr():
+    """D-06 demo moment, end-to-end with REAL CLIP: a planted image whose OCR
+    text does NOT contain the query phrase is found via the visual path, and
+    the snippet quotes its OCR text. Skips cleanly without models.
+
+    Runs on its own fresh index (it is the file's last test) so single-list
+    RRF ties against files left by earlier tests cannot push it out of top-3;
+    two text distractors keep the bar honest.
+    """
+    import shutil
+    import time
+
+    from PIL import Image
+
+    from local_memory.embeddings import get_image_embedder
+
+    clip_home = Path(__file__).parent / ".tmpdata-quality-clip"
+    old = (config.DATA_HOME, config.DB_PATH, config.THUMBS_DIR,
+           config.SETTINGS_PATH, config.MODELS_DIR)
+    try:
+        shutil.rmtree(clip_home, ignore_errors=True)
+        config.DATA_HOME = clip_home
+        config.DB_PATH = clip_home / "index.db"
+        config.THUMBS_DIR = clip_home / "thumbs"
+        config.SETTINGS_PATH = clip_home / "settings.json"
+        config.MODELS_DIR = _REPO_MODELS_DIR  # real CLIP for this test only
+        database.close()
+        vector_store.invalidate_cache()
+        config.ensure_dirs()
+        database.init_db()
+        vector_store.init_db()
+
+        docs = clip_home / "photos"
+        docs.mkdir(parents=True)
+        # A real (small) image; its OCR text shares no words with the query.
+        p = docs / "ladder_photo.png"
+        Image.new("RGB", (64, 64), color=(90, 130, 200)).save(p)
+        ocr = "a wooden ladder leaning against a garden wall covered in ivy"
+        fid = database.upsert_file(str(p), str(docs), ".png", p.stat().st_size,
+                                   time.time(), "image", ocr_text=ocr)
+        # Real CLIP image embedding into the visual space (as the pipeline does).
+        vec = get_image_embedder().encode_image(Image.open(p))
+        vector_store.upsert(fid, 0, "image", vec)
+        # Two text distractors: even if the image lost every RRF tie it would
+        # still land within top-3, so top-3 is a real but stable bar.
+        for i in range(2):
+            dp = docs / f"note{i}.txt"
+            dp.write_text(f"shopping list number {i}: milk, bread, apples", encoding="utf-8")
+        assert scan_folder(str(docs)) >= 2
+
+        results = query_engine.search("sunset over the ocean waves", top_k=5)
+        hit = next((r for r in results if r["file_id"] == fid), None)
+        assert hit is not None, f"planted image not in results: {[r['name'] for r in results]}"
+        top3 = [r["file_id"] for r in results[:3]]
+        assert fid in top3, f"planted image not top-3: {[(r['name'], r['matched_via']) for r in results]}"
+        assert hit["matched_via"] in ("semantic", "both"), hit["matched_via"]
+        assert hit["snippet_source"] == "ocr", hit
+        assert "ladder" in hit["snippet"].lower(), hit["snippet"]
+    finally:
+        config.DATA_HOME, config.DB_PATH, config.THUMBS_DIR, config.SETTINGS_PATH, config.MODELS_DIR = old
+        database.close()
+        vector_store.invalidate_cache()
+        config.ensure_dirs()
+        database.init_db()
+        vector_store.init_db()
+        shutil.rmtree(clip_home, ignore_errors=True)
