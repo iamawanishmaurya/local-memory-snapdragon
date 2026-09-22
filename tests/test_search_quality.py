@@ -389,3 +389,45 @@ def test_image_ocr_snippet_priority(monkeypatch):
     hit = next(r for r in results if r["file_id"] == fid)
     assert hit["snippet_source"] == "ocr", hit
     assert "zqxocrterm" in hit["snippet"].lower() or "<mark>" in hit["snippet"], hit["snippet"]
+
+
+# --- 03-02 Task 2: /api/search edge cases (D-07) ------------------------------
+
+
+def test_api_empty_query_400():
+    from tests.conftest import make_security_client
+
+    client, headers = make_security_client()
+    for body in ({"query": ""}, {"query": "   "}, {"query": "\t\n"}):
+        r = client.post("/api/search", json=body, headers=headers)
+        assert r.status_code == 400, (body, r.status_code)
+        assert r.json() == {"error": "empty query"}
+
+
+def test_api_long_query_truncated():
+    from tests.conftest import make_security_client
+
+    client, headers = make_security_client()
+    r = client.post("/api/search", json={"query": "x" * 500}, headers=headers)
+    assert r.status_code == 200
+    assert len(r.json()["query"]) <= 200
+
+
+def test_api_fts_metacharacters_never_500():
+    from tests.conftest import make_security_client
+
+    client, headers = make_security_client()
+    for q in ('pen" OR (', '"', "()*:", "a AND b OR c NOT/99"):
+        r = client.post("/api/search", json={"query": q}, headers=headers)
+        assert r.status_code == 200, (q, r.status_code, r.text)
+
+
+def test_api_zero_results_clean_empty():
+    from tests.conftest import make_security_client
+
+    client, headers = make_security_client()
+    r = client.post("/api/search", json={"query": "zqxnothingmatchesatall"}, headers=headers)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["results"] == []
+    assert isinstance(body["query"], str)

@@ -36,6 +36,15 @@ class FolderIn(BaseModel):
 
 
 class SearchIn(BaseModel):
+    """POST /api/search body (D-04/D-07 contract).
+
+    Empty/whitespace query -> 400 ``{"error": "empty query"}``. Queries are
+    truncated to 200 chars server-side before reaching the engine (response
+    echoes the effective query). FTS5 metacharacters are neutralized by
+    ``query_engine.fts_quote`` — they can never 500. No ``?mode=`` parameter:
+    the fused ranking is the single API surface.
+    """
+
     query: str
     top_k: int = 12
 
@@ -210,9 +219,16 @@ def api_resume():
     return {"paused": False}
 
 
+MAX_QUERY_CHARS = 200  # D-07: longer queries are truncated, not rejected
+
+
 @app.post("/api/search")
 def api_search(body: SearchIn):
-    return {"query": body.query, "results": query_engine.search(body.query, body.top_k)}
+    if not body.query.strip():
+        return JSONResponse({"error": "empty query"}, status_code=400)
+    q = body.query[:MAX_QUERY_CHARS]
+    # Zero results stays a clean 200 {"results": []} — the UI adds the hint.
+    return {"query": q, "results": query_engine.search(q, body.top_k)}
 
 
 @app.get("/api/health")
