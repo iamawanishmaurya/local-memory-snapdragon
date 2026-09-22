@@ -98,20 +98,25 @@ export function SearchPage() {
         </div>
 
         {/* Search bar */}
-        <div className='flex gap-2'>
+        <form
+          className='flex gap-2'
+          onSubmit={(e) => {
+            e.preventDefault()
+            doSearch(query)
+          }}
+        >
           <Input
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && doSearch(query)}
             placeholder="Search everything… e.g. 'invoice from last month'"
             className='h-11 text-base'
           />
-          <Button className='h-11' onClick={() => doSearch(query)} disabled={search.isPending}>
+          <Button type='submit' className='h-11' disabled={search.isPending}>
             {search.isPending ? <Loader2 className='animate-spin' /> : <SearchIcon />}
             Search
           </Button>
-        </div>
+        </form>
         <div className='mt-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground'>
           Try:
           {EXAMPLES.map((ex) => (
