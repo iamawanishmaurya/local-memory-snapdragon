@@ -332,15 +332,31 @@ def handle_change(kind: str, path: str) -> None:
         log.exception("incremental index failed for %s", path)
 
 
+def reconcile_deletions(folders: list[str]) -> tuple[int, int]:
+    """Startup reconcile sweep (D-06): purge index entries whose source files
+    vanished while the app was off, plus orphan chunks/vectors.
+
+    Costs one stat per indexed path — no filesystem rescan. Idempotent.
+    Returns (stale_entries_removed, orphan_vectors_removed).
+    """
+    stale = 0
+    for row in database.list_files():
+        p = str(row["path"])
+        if not Path(p).exists():
+            _purge(p)
+            stale += 1
+    database.delete_orphan_chunks()
+    orphan_vectors = vector_store.delete_orphans()
+    log.info("reconcile: removed %d stale entries, %d orphan vectors", stale, orphan_vectors)
+    return stale, orphan_vectors
+
+
 def rescan_all_async(folders: list[str]) -> threading.Thread:
     def run():
         for f in folders:
             if _is_paused():
                 return
             scan_folder(f)
-        # Prune rows for files that disappeared while we were not watching.
-        for f in folders:
-            database.remove_missing(f)
 
     t = threading.Thread(target=run, name="local-memory-rescan", daemon=True)
     t.start()

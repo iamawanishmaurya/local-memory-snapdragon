@@ -16,7 +16,7 @@ from .. import config, privacy
 from ..embeddings import base as emb_base
 from ..extractors import image_understanding
 from ..health import storage_health
-from ..pipeline import handle_change, rescan_all_async, scan_folder, status as pipeline_status
+from ..pipeline import handle_change, reconcile_deletions, rescan_all_async, scan_folder, status as pipeline_status
 from ..search import query_engine
 from ..watcher import FolderWatcher
 
@@ -188,6 +188,13 @@ def startup() -> None:
     database.init_db()
     vector_store.init_db()
     folders = config.watched_folders()
+    # Reconcile sweep (D-06): self-heal deletions that happened while the app
+    # was off — before the watcher starts, so events never race the sweep.
+    try:
+        reconcile_deletions(folders)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("startup reconcile sweep failed")
     if folders:
         watcher.start(folders)
         rescan_all_async(folders)
