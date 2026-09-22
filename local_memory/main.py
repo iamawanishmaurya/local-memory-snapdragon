@@ -35,6 +35,31 @@ def doctor() -> None:
         print(f"  migration      : complete (index present at {config.DATA_HOME})")
     else:
         print("  migration      : not needed (no legacy index found)")
+    # Auth posture (D-05). Report-only: doctor never regenerates the token —
+    # generation stays in server startup(). Read AFTER migrate_home() so the
+    # path reflects the final data home.
+    import os as _auth_os
+    if _auth_os.environ.get("LOCAL_MEMORY_TOKEN"):
+        # Pinned dev-override rule: LOCAL_MEMORY_TOKEN is the only sanctioned
+        # token override (see config.auth_token docstring).
+        print("  auth token     : LOCAL_MEMORY_TOKEN env override active")
+    elif config.TOKEN_PATH.exists():
+        try:
+            if config.TOKEN_PATH.read_text(encoding="utf-8").strip():
+                from datetime import datetime
+                mtime = datetime.fromtimestamp(config.TOKEN_PATH.stat().st_mtime)
+                print(f"  auth token     : present (generated {mtime:%Y-%m-%d %H:%M})")
+            else:
+                print("  WARNING: auth token file is EMPTY — delete it so startup can regenerate a valid one")
+        except OSError:
+            print("  WARNING: auth token file is UNREADABLE — check permissions on the data home")
+    else:
+        print("  auth token     : MISSING (will be generated at first startup)")
+    try:
+        from .server import app as _server_app  # noqa: F401 — import check only
+        print("  middleware     : Host/Origin validation + API token required on /api/*")
+    except Exception:
+        print("  WARNING: server security middleware could not be imported — run scripts/dependency check")
     print(f"  models dir     : {config.MODELS_DIR}")
     print(f"  onnxruntime    : available" if base.available_providers() else "  onnxruntime    : NOT INSTALLED")
     rep = base.provider_report()
