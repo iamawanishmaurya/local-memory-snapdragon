@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Local index data — never commit user content or embeddings
+data/
+*.db
+*.sqlite3
+models/
+!models/.gitkeep
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Frontend toolchain
+tools/
+ui/node_modules/
+ui/dist/
+.pytest_cache/
+
+.planning/
