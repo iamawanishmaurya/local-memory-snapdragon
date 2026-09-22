@@ -10,6 +10,72 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # Import through conftest so the isolated home is set before local_memory loads.
 from conftest import security_client  # noqa: F401,E402
 
+import logging  # noqa: E402
+
+# Host/Origin spoofing (02-02, D-03): DNS-rebinding Hosts and foreign Origins
+# must 403 — and 403 must win over 401 (middleware ordering: Host -> Origin ->
+# token). These tests always carry a VALID token to prove ordering.
+
+
+def test_wrong_host_403(security_client):
+    client, headers = security_client
+    r = client.get("/api/status", headers={"Host": "evil.example.com", **headers})
+    assert r.status_code == 403
+    assert r.json() == {"error": "forbidden host"}
+    # Destructive endpoint with a VALID token but a rebound Host: still 403.
+    r = client.post("/api/wipe", headers={"Host": "evil.example.com", **headers})
+    assert r.status_code == 403
+
+
+def test_spoofed_host_on_spa_403(security_client):
+    """Host check covers EVERY request — a rebound Host must not receive the
+    token-injected SPA shell either."""
+    client, _ = security_client
+    r = client.get("/", headers={"Host": "evil.example.com"})
+    assert r.status_code == 403
+
+
+def test_missing_host_403(security_client):
+    client, headers = security_client
+    r = client.get("/api/status", headers={"Host": "", **headers})
+    assert r.status_code == 403
+
+
+def test_foreign_origin_403_logged(security_client, caplog):
+    client, headers = security_client
+    with caplog.at_level(logging.WARNING, logger="local_memory.server.security"):
+        r = client.post(
+            "/api/wipe",
+            headers={"Origin": "http://evil.example.com", **headers},
+        )
+    assert r.status_code == 403
+    assert r.json() == {"error": "forbidden origin"}
+    # ROADMAP requires rejected attempts to be logged (demo talking point).
+    assert any("forbidden origin" in rec.message and "/api/wipe" in rec.message for rec in caplog.records)
+
+
+def test_wrong_port_origin_403(security_client):
+    """Same loopback host but a different port is still a foreign origin."""
+    client, headers = security_client
+    r = client.post("/api/wipe", headers={"Origin": "http://127.0.0.1:9999", **headers})
+    assert r.status_code == 403
+
+
+def test_valid_loopback_host_and_origin_pass(security_client):
+    client, headers = security_client
+    # Arbitrary PORT is fine — the loopback hostname is the check, not the port.
+    r = client.get("/api/status", headers={"Host": "127.0.0.1:9999", **headers})
+    assert r.status_code == 200
+    # Same-origin Origin (matching Host port) passes.
+    r = client.get(
+        "/api/status",
+        headers={"Host": "127.0.0.1:8787", "Origin": "http://127.0.0.1:8787", **headers},
+    )
+    assert r.status_code == 200
+    # localhost Host (any port) passes.
+    r = client.get("/api/status", headers={"Host": "localhost:8787", **headers})
+    assert r.status_code == 200
+
 
 def _api_routes(client):
     """Every registered /api route (method, path) from the OpenAPI schema."""

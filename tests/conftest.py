@@ -50,7 +50,11 @@ def make_security_client():
 
     token = config.auth_token()
     headers = {"Authorization": f"Bearer {token}"}
-    return TestClient(server_app.app), headers
+    # base_url pins a loopback Host on EVERY request — the Host/Origin
+    # middleware (02-02, D-03) validates all requests, so the default
+    # "testserver" host would 403 the whole suite. Individual tests override
+    # the Host via headers= to prove the 403 path.
+    return TestClient(server_app.app, base_url="http://127.0.0.1:8787"), headers
 
 
 @pytest.fixture(scope="module")

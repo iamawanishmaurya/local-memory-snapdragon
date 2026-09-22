@@ -6,7 +6,10 @@ All state lives in the local SQLite database; there is no external service.
 from __future__ import annotations
 
 import base64
+import logging
+import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -60,13 +63,72 @@ def _serve_index():
     return JSONResponse({"error": "UI not built"}, status_code=404)
 
 
-@app.middleware("http")
-async def token_auth_middleware(request: Request, call_next):
-    """Require `Authorization: Bearer <token>` on every /api/* route (D-02).
+_LOOPBACK_HOSTNAMES = {"localhost", "127.0.0.1", "::1"}
+_security_log = logging.getLogger("local_memory.server.security")
 
-    Fail closed: any missing/malformed/wrong token is 401. SPA-serving routes
-    (/, /assets, /images, catch-all) stay token-free so the UI can load.
+
+def _host_hostname(host_header: str) -> str | None:
+    """Hostname (no port, no brackets) from a Host header, or None if unparseable."""
+    try:
+        return urlparse(f"//{host_header}").hostname
+    except ValueError:
+        return None
+
+
+def _origin_port(origin: str) -> int | None:
+    try:
+        return urlparse(origin).port
+    except ValueError:
+        return None
+
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    """Host/Origin defense (D-03) + Bearer token on /api/* (D-02) in ONE handler.
+
+    Ordering is explicit and load-bearing: Host check -> Origin check -> token
+    check, so 403 always wins over 401 and a spoofed-Host request can never
+    reach an endpoint (nor the SPA shell, whose HTML embeds the token).
+
+    Fail closed: missing Host, non-loopback Host, or a foreign Origin is 403
+    and LOGGED (ROADMAP: rejected rebinding/CSRF attempts are a demo talking
+    point). Missing Origin passes (curl, same-origin GET navigations).
     """
+    host_header = request.headers.get("Host", "")
+    hostname = _host_hostname(host_header) if host_header else None
+    if hostname is None or hostname.lower() not in _LOOPBACK_HOSTNAMES:
+        _security_log.warning(
+            "rejected: forbidden host method=%s path=%s host=%s", request.method, request.url.path, host_header or "<missing>"
+        )
+        return JSONResponse({"error": "forbidden host"}, status_code=403)
+
+    origin = request.headers.get("Origin")
+    if origin:
+        o = urlparse(origin)
+        # Same server port as the Host header the client used (default: APP_PORT).
+        try:
+            host_port = urlparse(f"//{host_header}").port
+        except ValueError:
+            host_port = None
+        expected_port = host_port or config.APP_PORT
+        ok = (
+            o.scheme == "http"
+            and (o.hostname or "").lower() in _LOOPBACK_HOSTNAMES
+            and _origin_port(origin) == expected_port
+        )
+        # DEV FLAG (pinned rule): LOCAL_MEMORY_DEV=1 additionally allows the
+        # Vite dev server origin (http://localhost:5173 / 127.0.0.1:5173). This
+        # is the only sanctioned dev-origin override; production rejects it.
+        if not ok and os.environ.get("LOCAL_MEMORY_DEV") == "1" and o.scheme == "http":
+            dev_ok = (o.hostname or "").lower() in _LOOPBACK_HOSTNAMES and _origin_port(origin) in (5173, None)
+            ok = dev_ok
+        if not ok:
+            _security_log.warning(
+                "rejected: forbidden origin method=%s path=%s host=%s origin=%s",
+                request.method, request.url.path, host_header, origin,
+            )
+            return JSONResponse({"error": "forbidden origin"}, status_code=403)
+
     if request.url.path.startswith("/api/"):
         expected = f"Bearer {config.auth_token()}"
         if request.headers.get("Authorization", "") != expected:
