@@ -58,11 +58,14 @@ TARGETS = [
 # Optional NPU extras (compiled via AI Hub on the Snapdragon target).
 # TrOCR: pre-exported community ONNX (microsoft/trocr-small-printed ships no
 # onnx/model.onnx — that URL 404s). Files land under models/trocr/.
+# Primary: onnx-community (may be gated/401 anonymously); mirror: Xenova's
+# identical Optimum export (same files under onnx/).
 TROCR_BASE = "https://huggingface.co/onnx-community/trocr-small-printed-ONNX/resolve/main/"
+TROCR_MIRROR = "https://huggingface.co/Xenova/trocr-small-printed/resolve/main/onnx/"
 TROCR_TARGETS = [
-    ("trocr/encoder_model.onnx", [TROCR_BASE + "encoder_model.onnx"]),
-    ("trocr/decoder_model_merged.onnx", [TROCR_BASE + "decoder_model_merged.onnx"]),
-    ("trocr/trocr-tokenizer.json", [TROCR_BASE + "tokenizer.json"]),
+    ("trocr/encoder_model.onnx", [TROCR_BASE + "encoder_model.onnx", TROCR_MIRROR + "encoder_model.onnx"]),
+    ("trocr/decoder_model_merged.onnx", [TROCR_BASE + "decoder_model_merged.onnx", TROCR_MIRROR + "decoder_model_merged.onnx"]),
+    ("trocr/trocr-tokenizer.json", [TROCR_BASE + "tokenizer.json", "https://huggingface.co/Xenova/trocr-small-printed/resolve/main/tokenizer.json"]),
 ]
 QWEN_URL = "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/main/onnx/model.onnx"
 OPTIONAL = [
