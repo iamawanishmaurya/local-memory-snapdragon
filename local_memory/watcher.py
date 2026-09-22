@@ -21,12 +21,16 @@ def _should_process(path: str) -> bool:
     if p.name.startswith(IGNORE_NAMES):
         return False
     ext = p.suffix.lower()
-    return (
+    if (
         ext in config.TEXT_EXTS
         or ext in config.PDF_EXTS
         or ext in config.DOCX_EXTS
         or ext in config.IMAGE_EXTS
-    )
+        or ext in config.IPYNB_EXTS
+    ):
+        return True
+    # Binary types (incl. compound suffixes like .tar.gz) — metadata ingestion.
+    return config.binary_kind(path) is not None
 
 
 class _Handler(FileSystemEventHandler):

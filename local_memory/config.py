@@ -99,10 +99,57 @@ CHUNK_WORDS = 200
 CHUNK_OVERLAP_WORDS = 40
 
 # Files we attempt text extraction from, by extension.
-TEXT_EXTS = {".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".json", ".xml", ".yaml", ".yml", ".html", ".htm"}
+TEXT_EXTS = {".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".json", ".xml", ".yaml", ".yml", ".html", ".htm",
+             ".ps1", ".sh", ".bat", ".cmd"}
 PDF_EXTS = {".pdf"}
 DOCX_EXTS = {".docx"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff"}
+# Jupyter notebooks: JSON, ingested via markdown headers / first cells.
+IPYNB_EXTS = {".ipynb"}
+
+# Binary types we never open for content but still make findable by
+# filename/metadata (accuracy eval gap #1). ext/compound-suffix -> kind.
+BINARY_KINDS = {
+    ".zip": "archive", ".7z": "archive", ".rar": "archive", ".tar": "archive",
+    ".gz": "archive", ".tgz": "archive", ".bz2": "archive", ".xz": "archive",
+    ".jar": "archive", ".whl": "archive",
+    ".exe": "executable", ".dll": "executable", ".msi": "executable",
+    ".msix": "executable", ".appx": "executable", ".apk": "executable",
+    ".iso": "disk-image", ".img": "disk-image", ".dmg": "disk-image",
+    ".vhd": "disk-image", ".vhdx": "disk-image",
+    ".parquet": "data", ".xlsx": "data", ".pptx": "data",
+}
+# Compound suffixes checked against the full filename before the bare ext
+# (Path("x.tar.gz").suffix is ".gz").
+BINARY_COMPOUND = {".tar.gz": "archive", ".tar.bz2": "archive", ".tar.xz": "archive"}
+
+# Deep inspection (archive entry listing) caps — never open huge files.
+ARCHIVE_INSPECT_MAX_BYTES = 100 * 1024 * 1024  # 100 MB
+ARCHIVE_ENTRY_LIMIT = 20
+
+# Notebook ingestion caps.
+IPYNB_MAX_CHARS = 8000
+
+# OCR of PDF-embedded page images (accuracy eval gap #2).
+PDF_OCR_MAX_PAGES = 5          # OCR at most the first N text-free pages
+PDF_OCR_MAX_BYTES = 60 * 1024 * 1024  # skip OCR for PDFs over 60 MB
+
+
+def binary_kind(path: str | Path) -> str | None:
+    """Kind for a binary file ('archive'/'executable'/...), or None.
+
+    Compound suffixes (.tar.gz) win over the bare extension.
+    """
+    name = str(path).lower()
+    for suffix, kind in BINARY_COMPOUND.items():
+        if name.endswith(suffix):
+            return kind
+    return BINARY_KINDS.get(Path(name).suffix)
+
+
+def indexable_exts() -> set[str]:
+    """Every extension the scanner should pick up."""
+    return TEXT_EXTS | PDF_EXTS | DOCX_EXTS | IMAGE_EXTS | IPYNB_EXTS | set(BINARY_KINDS) | set(BINARY_COMPOUND)
 
 DEFAULT_WATCHED = ["Downloads", "Documents", "Desktop", "Pictures"]
 

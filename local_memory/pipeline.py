@@ -87,6 +87,17 @@ def _extract_one(path: Path):
         return {"kind": "image", "path": path, "folder": folder, "ext": ext,
                 "size": stat.st_size, "mtime": stat.st_mtime,
                 "ocr_text": ocr_text, "chunks": chunks, "img": img_copy, "thumb": thumb}
+    # Binary types (archives/executables/disk images/data): never opened for
+    # content — ingested via synthesized name/metadata chunks so they are
+    # findable by FTS + Nomic embeddings (accuracy eval gap #1).
+    if config.binary_kind(str(path)):
+        kind, chunks = text_extractor.metadata_chunks(path)
+        if chunks:
+            return {"kind": "text", "path": path, "folder": folder, "ext": ext,
+                    "size": stat.st_size, "mtime": stat.st_mtime,
+                    "meta_kind": kind, "chunks": chunks}
+        return {"kind": "meta", "path": path, "folder": folder, "ext": ext,
+                "size": stat.st_size, "mtime": stat.st_mtime, "meta_kind": kind}
     text, kind = text_extractor.extract_text(path)
     if not text.strip():
         return {"kind": "meta", "path": path, "folder": folder, "ext": ext,
@@ -143,6 +154,19 @@ def index_file(path: str) -> bool:
 
     if ext in config.IMAGE_EXTS:
         return _index_image(p, folder, ext, stat.st_size, stat.st_mtime)
+
+    # Binary types: metadata-only ingestion (see _extract_one).
+    if config.binary_kind(str(p)):
+        kind, chunks = text_extractor.metadata_chunks(p)
+        if not chunks:
+            database.upsert_file(str(p), folder, ext, stat.st_size, stat.st_mtime, kind)
+            return False
+        file_id = database.upsert_file(str(p), folder, ext, stat.st_size, stat.st_mtime, kind)
+        database.replace_chunks(file_id, list(enumerate(chunks)))
+        _ensure_embedders()
+        vectors = get_text_embedder().encode_batch(chunks)
+        vector_store.upsert_many([(file_id, i, "text", v) for i, v in enumerate(vectors)])
+        return True
 
     text, kind = text_extractor.extract_text(p)
     if not text.strip():
@@ -203,7 +227,7 @@ def scan_folder(folder: str, recursive: bool = True, workers: int | None = None,
     root = Path(folder)
     if not root.is_dir():
         return 0
-    exts = config.TEXT_EXTS | config.PDF_EXTS | config.DOCX_EXTS | config.IMAGE_EXTS
+    exts = config.indexable_exts()
     files = [p for p in (root.rglob("*") if recursive else root.glob("*")) if p.is_file() and p.suffix.lower() in exts]
     if not files:
         return 0
