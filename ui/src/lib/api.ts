@@ -19,10 +19,14 @@ export interface SearchResult {
   size_bytes: number
   mtime: number
   score: number
-  match_semantic: number
-  match_visual: number
-  match_keyword: number
-  snippet: string
+  /** D-04: which engine(s) matched — 'semantic' | 'keyword' | 'both'. */
+  matched_via?: 'semantic' | 'keyword' | 'both'
+  /** Snippet text; may contain FTS5 <mark>…</mark> around matched terms. */
+  snippet?: string
+  /** Alias for a pre-highlighted snippet if the backend splits it out later. */
+  highlight?: string
+  /** D-06: where the snippet came from — 'ocr' | 'chunk' | 'name'. */
+  snippet_source?: 'ocr' | 'chunk' | 'name'
 }
 
 export interface HealthReport {
