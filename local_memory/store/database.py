@@ -111,11 +111,16 @@ def replace_chunks(file_id: int, chunks: list[tuple[int, str]]) -> None:
         conn.commit()
 
 
-def delete_file(path: str) -> None:
+def delete_file(path: str) -> int | None:
+    """Delete a file row; returns the deleted file's id (None if absent)."""
     with _lock:
         conn = _conn()
+        row = conn.execute("SELECT id FROM files WHERE path=?", (path,)).fetchone()
+        if row is None:
+            return None
         conn.execute("DELETE FROM files WHERE path=?", (path,))
         conn.commit()
+        return int(row["id"])
 
 
 def get_file(path: str) -> sqlite3.Row | None:
