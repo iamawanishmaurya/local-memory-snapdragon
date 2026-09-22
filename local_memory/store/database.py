@@ -128,6 +128,12 @@ def get_file(path: str) -> sqlite3.Row | None:
         return _conn().execute("SELECT * FROM files WHERE path=?", (path,)).fetchone()
 
 
+def file_by_id(file_id: int) -> sqlite3.Row | None:
+    """Row for an indexed file id (used by /api/thumbnail — D-04 index-lookup-only)."""
+    with _lock:
+        return _conn().execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
+
+
 def needs_index(path: str, mtime: float, size: int) -> bool:
     row = get_file(path)
     return row is None or row["mtime"] != mtime or row["size_bytes"] != size

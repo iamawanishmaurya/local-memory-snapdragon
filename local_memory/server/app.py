@@ -221,12 +221,39 @@ def api_health():
 
 
 @app.get("/api/thumbnail")
-def api_thumbnail(path: str):
-    """Serve the cached thumbnail for an indexed image."""
-    thumb = image_understanding.make_thumbnail(Path(path))
-    if thumb and thumb.exists():
+def api_thumbnail(file_id: int):
+    """Serve the cached thumbnail for an INDEXED image (D-04: index-lookup only).
+
+    The caller supplies a file id — never a path. The served file is resolved
+    from the files table and lives under config.THUMBS_DIR, so arbitrary local
+    paths can never reach a filesystem call. Non-indexed / non-image -> 404
+    (no existence oracle).
+
+    NOTE (Phase 4): if the UI ever previews images it must use fetch ->
+    URL.createObjectURL — a Bearer header cannot ride <img src>.
+    """
+    import hashlib
+
+    from ..store import database
+    row = database.file_by_id(file_id)
+    if row is None or row["kind"] != "image":
+        return JSONResponse({"error": "not found"}, status_code=404)
+    digest = hashlib.sha1(row["path"].encode("utf-8")).hexdigest()
+    thumb = config.THUMBS_DIR / f"{digest}.jpg"
+    # Belt-and-braces: the served file must always be inside THUMBS_DIR —
+    # the base is a constant and the name is a hex digest, so this can never
+    # fail, but fail loudly (500) rather than serve outside the sandbox.
+    assert thumb.resolve().parent == config.THUMBS_DIR.resolve(), "thumbnail escaped THUMBS_DIR"
+    if not thumb.is_file():
+        # Regenerate ONLY from the indexed path; a deleted source 404s —
+        # no regeneration from (and no read of) a caller-named path.
+        source = Path(row["path"])
+        if not source.is_file():
+            return JSONResponse({"error": "not found"}, status_code=404)
+        thumb = image_understanding.make_thumbnail(source) or thumb
+    if thumb.is_file():
         return FileResponse(thumb, media_type="image/jpeg")
-    return JSONResponse({"error": "no thumbnail"}, status_code=404)
+    return JSONResponse({"error": "not found"}, status_code=404)
 
 
 @app.post("/api/wipe")

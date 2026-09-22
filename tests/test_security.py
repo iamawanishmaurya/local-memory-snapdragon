@@ -77,6 +77,69 @@ def test_valid_loopback_host_and_origin_pass(security_client):
     assert r.status_code == 200
 
 
+# --- /api/thumbnail: index-lookup-only (02-02, D-04) -------------------------
+
+
+def _index_image(security_client, name="pic.png", kind="image"):
+    """Insert a real tiny image into the isolated index; returns (file_id, source_path)."""
+    from PIL import Image
+    from local_memory import config
+    from local_memory.store import database
+
+    client, _ = security_client
+    src = config.DATA_HOME / name
+    Image.new("RGB", (8, 8), color=(200, 30, 30)).save(src, "PNG")
+    file_id = database.upsert_file(str(src), str(config.DATA_HOME), ".png", src.stat().st_size, src.stat().st_mtime, kind)
+    return file_id, src
+
+
+def test_thumbnail_bogus_id_404(security_client):
+    client, headers = security_client
+    r = client.get("/api/thumbnail", params={"file_id": 999999}, headers=headers)
+    assert r.status_code == 404
+
+
+def test_thumbnail_text_kind_404(security_client):
+    client, headers = security_client
+    file_id, _ = _index_image(security_client, name="doc.txt", kind="text")
+    r = client.get("/api/thumbnail", params={"file_id": file_id}, headers=headers)
+    assert r.status_code == 404
+
+
+def test_thumbnail_indexed_image_200(security_client):
+    import hashlib
+
+    from local_memory import config
+
+    client, headers = security_client
+    file_id, src = _index_image(security_client)
+    # No thumb yet: the handler regenerates from the INDEXED path only.
+    r = client.get("/api/thumbnail", params={"file_id": file_id}, headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "image/jpeg"
+    digest = hashlib.sha1(str(src).encode("utf-8")).hexdigest()
+    thumb = config.THUMBS_DIR / f"{digest}.jpg"
+    assert thumb.is_file(), "thumb must be served from the deterministic THUMBS_DIR slot"
+
+
+def test_thumbnail_dead_source_404(security_client):
+    """Indexed image whose source was deleted after indexing: no regeneration
+    from a dead path — 404."""
+    client, headers = security_client
+    file_id, src = _index_image(security_client, name="gone.png")
+    src.unlink()
+    r = client.get("/api/thumbnail", params={"file_id": file_id}, headers=headers)
+    assert r.status_code == 404
+
+
+def test_thumbnail_legacy_path_param_rejected(security_client):
+    """The old arbitrary-read `?path=` interface is gone: FastAPI 422s because
+    file_id is required (the arbitrary read no longer exists)."""
+    client, headers = security_client
+    r = client.get("/api/thumbnail", params={"path": r"C:\Windows\win.ini"}, headers=headers)
+    assert r.status_code == 422
+
+
 def _api_routes(client):
     """Every registered /api route (method, path) from the OpenAPI schema."""
     routes = []
