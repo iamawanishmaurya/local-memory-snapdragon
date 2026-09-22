@@ -66,6 +66,7 @@ TROCR_TARGETS = [
     ("trocr/encoder_model.onnx", [TROCR_BASE + "encoder_model.onnx", TROCR_MIRROR + "encoder_model.onnx"]),
     ("trocr/decoder_model_merged.onnx", [TROCR_BASE + "decoder_model_merged.onnx", TROCR_MIRROR + "decoder_model_merged.onnx"]),
     ("trocr/trocr-tokenizer.json", [TROCR_BASE + "tokenizer.json", "https://huggingface.co/Xenova/trocr-small-printed/resolve/main/tokenizer.json"]),
+    ("trocr/generation_config.json", [TROCR_BASE + "generation_config.json", "https://huggingface.co/Xenova/trocr-small-printed/resolve/main/generation_config.json"]),
 ]
 QWEN_URL = "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/main/onnx/model.onnx"
 OPTIONAL = [

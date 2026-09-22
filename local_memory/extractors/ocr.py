@@ -21,14 +21,14 @@ _trocr_tried = False
 _trocr = None  # (encoder_session, decoder_session, tokenizer_json_path)
 _trocr_note = ""
 
-# CLIP/ViT ImageNet normalization (same constants as embeddings/clip_image.py —
-# TrOCR uses the ViT image processor).
-_IMAGENET_MEAN = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
-_IMAGENET_STD = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
+# Normalization from trocr's DeiTFeatureExtractor preprocessor_config.json:
+# mean = std = 0.5 (do_rescale 1/255 then normalize).
+_IMAGENET_MEAN = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+_IMAGENET_STD = np.array([0.5, 0.5, 0.5], dtype=np.float32)
 _IMG_SIZE = 384
 
-_DECODER_START_TOKEN_ID = 0
 _EOS_TOKEN_ID = 2
+_PAD_TOKEN_ID = 1
 _MAX_DECODE_STEPS = 20
 
 
@@ -60,10 +60,17 @@ def _reader_present() -> bool:
 
 
 def _load_tokenizer(path: Path) -> dict[int, str]:
-    """id -> token map from a HF tokenizer.json vocab."""
+    """id -> token map from a HF tokenizer.json vocab (dict or list form)."""
     data = json.loads(path.read_text(encoding="utf-8"))
     vocab = data.get("model", {}).get("vocab", {})
-    return {int(i): tok for tok, i in vocab.items()}
+    if isinstance(vocab, dict):
+        return {int(i): tok for tok, i in vocab.items()}
+    # SentencePiece-style list (index == id); entries may be [token] pairs.
+    out: dict[int, str] = {}
+    for i, entry in enumerate(vocab):
+        tok = entry[0] if isinstance(entry, (list, tuple)) else entry
+        out[i] = tok
+    return out
 
 
 # Roberta-style byte-level BPE unicode table (reverse map for decoding).
@@ -92,15 +99,25 @@ def _byte_decoder() -> dict[str, bytes]:
 
 
 def _decode_ids(ids: list[int], tokenizer: dict[int, str]) -> str:
-    """Decode token ids to text (roberta byte-level: join, map bytes back)."""
-    tokens = [tokenizer[i] for i in ids if i in tokenizer and tokenizer[i]]
-    text = "".join(tokens).replace("Ġ", " ")
-    try:
-        bd = _byte_decoder()
-        raw = b"".join(bd[ch] for ch in text if ch in bd)
-        text = raw.decode("utf-8", errors="ignore")
-    except Exception:
-        pass
+    """Decode token ids to text (sentencepiece/roberta byte-level)."""
+    pieces: list[bytes] = []
+    bd = _byte_decoder()
+    for i in ids:
+        tok = tokenizer.get(i)
+        if not tok:
+            continue
+        if tok.startswith("<0x") and tok.endswith(">"):  # byte-fallback token
+            try:
+                pieces.append(bytes([int(tok[3:-1], 16)]))
+                continue
+            except ValueError:
+                pass
+        pieces.append(tok.encode("utf-8"))
+    text = b"".join(pieces).decode("utf-8", errors="ignore")
+    text = text.replace("Ġ", " ").replace("▁", " ")
+    # GPT-2 byte-level un-mangling; keep any char the table doesn't cover
+    # (notably the spaces introduced above, which the table omits).
+    text = "".join(bd[ch].decode("latin-1") if ch in bd else ch for ch in text)
     return text.strip()
 
 
@@ -128,39 +145,44 @@ def _try_trocr():
         if enc_p.exists() and dec_p.exists() and tok_p.exists():
             enc = _base.create_session(enc_p)
             dec = _base.create_session(dec_p)
-            _trocr = (enc, dec, _load_tokenizer(tok_p))
+            start_id = _PAD_TOKEN_ID
+            gen_cfg = d / "generation_config.json"
+            if gen_cfg.exists():
+                try:
+                    start_id = int(json.loads(gen_cfg.read_text(encoding="utf-8"))
+                                   .get("decoder_start_token_id", _PAD_TOKEN_ID))
+                except Exception:
+                    pass
+            _trocr = (enc, dec, _load_tokenizer(tok_p), start_id)
             _trocr_note = "trocr"
     except Exception:
         _trocr = None
     return _trocr
 
 
-def _past_init(dec_sess) -> dict[str, np.ndarray]:
-    """Zero-length past_key_values for the merged decoder's first pass."""
-    past: dict[str, np.ndarray] = {}
-    for inp in dec_sess.get_inputs():
-        name = inp.name
-        if "past" not in name.lower():
-            continue
-        shape = []
-        for dim in inp.shape:
-            shape.append(0 if isinstance(dim, str) or dim is None else int(dim))
-        # The seq-len axis of a zero-length past may not be symbolic; force
-        # the second axis (batch, heads, seq, head_dim) to 0 regardless.
-        if len(shape) == 4:
-            shape[2] = 0
-        past[name] = np.zeros(shape, dtype=np.float32)
-    return past
-
-
 def _greedy_decode(encoder_out: np.ndarray, dec_sess, tokenizer: dict[int, str],
+                   start_token_id: int = _PAD_TOKEN_ID,
                    max_steps: int = _MAX_DECODE_STEPS) -> str:
-    """Autoregressive argmax decode over decoder_model_merged.onnx (KV fed back)."""
-    ids = [_DECODER_START_TOKEN_ID]
-    past = _past_init(dec_sess)
-    for step in range(max_steps):
+    """Autoregressive argmax decode over decoder_model_merged.onnx.
+
+    Runs with use_cache_branch=False (full recompute per step): the merged
+    KV-cache branch of this export produces corrupt continuations, while the
+    recompute path decodes cleanly and the decoder is small enough that the
+    quadratic cost is irrelevant at <=20 steps.
+    """
+    ids = [start_token_id]
+    # past_key_values inputs are required by the graph even on the recompute
+    # branch (use_cache_branch=False) — zero-length tensors satisfy them.
+    zero_past: dict[str, np.ndarray] = {}
+    for inp in dec_sess.get_inputs():
+        if "past" not in inp.name.lower():
+            continue
+        dims = [1 if (d is None or isinstance(d, str)) else int(d) for d in inp.shape]
+        if len(dims) == 4:
+            dims[0], dims[2] = 1, 0  # batch=1, zero-length sequence
+        zero_past[inp.name] = np.zeros(dims, dtype=np.float32)
+    for _step in range(max_steps):
         feed: dict[str, np.ndarray] = {}
-        use_cache = step > 0
         for inp in dec_sess.get_inputs():
             low = inp.name.lower()
             if low == "input_ids":
@@ -168,20 +190,12 @@ def _greedy_decode(encoder_out: np.ndarray, dec_sess, tokenizer: dict[int, str],
             elif "encoder_hidden_states" in low:
                 feed[inp.name] = encoder_out
             elif "use_cache_branch" in low:
-                feed[inp.name] = np.array([use_cache], dtype=bool)
-            elif "past" in low and inp.name in past:
-                feed[inp.name] = past[inp.name]
+                feed[inp.name] = np.array([False], dtype=bool)
+            elif "past" in low:
+                feed[inp.name] = zero_past[inp.name]
         out = dec_sess.run(None, feed)
         logits = np.asarray(out[0], dtype=np.float32)
         next_id = int(np.argmax(logits[0, -1]))
-        # Collect present.* outputs as the next step's past (name-matched when
-        # possible, otherwise positionally in output order).
-        present = [o for o, meta in zip(out, dec_sess.get_outputs()) if "present" in meta.name.lower()]
-        if present:
-            past = {}
-            past_inputs = [i.name for i in dec_sess.get_inputs() if "past" in i.name.lower()]
-            if len(present) == len(past_inputs):
-                past = dict(zip(past_inputs, [np.asarray(p, dtype=np.float32) for p in present]))
         if next_id == _EOS_TOKEN_ID:
             break
         ids.append(next_id)
@@ -212,7 +226,7 @@ def ocr_image(path: Path) -> str:
     # 1. TrOCR ONNX path (models downloaded via setup_models --trocr).
     trocr = _try_trocr()
     if trocr is not None:
-        enc_sess, dec_sess, tokenizer = trocr
+        enc_sess, dec_sess, tokenizer, start_id = trocr
         try:
             from PIL import Image
             arr = _preprocess(Image.open(path))
@@ -220,7 +234,7 @@ def ocr_image(path: Path) -> str:
             encoder_out = np.asarray(
                 enc_sess.run(None, {enc_input: arr})[0], dtype=np.float32
             )
-            text = _greedy_decode(encoder_out, dec_sess, tokenizer)
+            text = _greedy_decode(encoder_out, dec_sess, tokenizer, start_id)
             if text:
                 return text[:2000]
         except Exception:
