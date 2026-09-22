@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 
 
@@ -71,18 +72,9 @@ def main() -> None:
     parser.add_argument("--bench", action="store_true", help="run throughput benchmark and exit")
     parser.add_argument("--clean", action="store_true", help="prune orphans + vacuum (keeps settings) and exit")
     parser.add_argument("--wipe", action="store_true", help="destroy the entire local index and exit")
-    parser.add_argument("--no-deps", action="store_true", help="skip auto-install of requirements")
+    parser.add_argument("--no-deps", action="store_true", help="skip dependency validation (or set LOCAL_MEMORY_NO_DEPS=1)")
     parser.add_argument("--port", type=int, default=None)
     args = parser.parse_args()
-
-    # Auto-install requirements first on every run (fresh clone / new venv).
-    # Skipped with --no-deps or LOCAL_MEMORY_NO_DEPS=1 (offline).
-    if not args.no_deps:
-        try:
-            from .deps import ensure_requirements
-            ensure_requirements()
-        except Exception as e:
-            print(f"[deps] check skipped ({e})")
 
     # Console encoding: Windows cp1252 crashes on unicode status glyphs.
     for stream in (sys.stdout, sys.stderr):
@@ -90,6 +82,12 @@ def main() -> None:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
+
+    # Fail-fast dependency validation (D-07): no pip, no network — just imports.
+    # Skipped with --no-deps or LOCAL_MEMORY_NO_DEPS=1 (explicit opt-out).
+    if not args.no_deps and os.environ.get("LOCAL_MEMORY_NO_DEPS") != "1":
+        from .deps import fail_fast
+        fail_fast()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
