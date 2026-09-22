@@ -12,6 +12,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest  # noqa: E402
 
+# Import the full server/test stack EAGERLY at conftest import time — before
+# any test module runs. test_deps_failfast monkeypatches importlib.import_module
+# and the fake leaks, breaking lazy imports (pydantic/fastapi) that happen later
+# during a fixture.
+from fastapi.testclient import TestClient  # noqa: E402
+from local_memory import config  # noqa: E402
+from local_memory.server import app as server_app  # noqa: E402
+from local_memory.store import database, vector_store  # noqa: E402
+
 _TMP_HOME = Path(__file__).parent / ".tmpdata-security"
 # Env-var-before-import convention (Phase 1 pitfall): the isolated home must
 # be chosen BEFORE local_memory (and its config paths) is imported.
@@ -25,12 +34,6 @@ def make_security_client():
     Mirrors test_smoke.py's setup_module repointing; the headers are built
     from config.auth_token() — the app's own token factory (D-05).
     """
-    from fastapi.testclient import TestClient
-
-    from local_memory import config
-    from local_memory.server import app as server_app
-    from local_memory.store import database, vector_store
-
     import shutil
     shutil.rmtree(_TMP_HOME, ignore_errors=True)
     config.DATA_HOME = _TMP_HOME
