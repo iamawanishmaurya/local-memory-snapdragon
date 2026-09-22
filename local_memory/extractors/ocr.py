@@ -229,12 +229,8 @@ def ocr_image(path: Path) -> str:
         enc_sess, dec_sess, tokenizer, start_id = trocr
         try:
             from PIL import Image
-            arr = _preprocess(Image.open(path))
-            enc_input = enc_sess.get_inputs()[0].name
-            encoder_out = np.asarray(
-                enc_sess.run(None, {enc_input: arr})[0], dtype=np.float32
-            )
-            text = _greedy_decode(encoder_out, dec_sess, tokenizer, start_id)
+            text = _ocr_pil_trocr(Image.open(path), enc_sess, dec_sess,
+                                  tokenizer, start_id)
             if text:
                 return text[:2000]
         except Exception:
@@ -247,6 +243,43 @@ def ocr_image(path: Path) -> str:
         return "\n".join(results)
     except Exception:
         return ""
+
+
+def ocr_pil(img) -> str:
+    """OCR an in-memory PIL image (e.g. a PDF-embedded page image).
+
+    Same backend chain as ocr_image: TrOCR ONNX first, then EasyOCR on the
+    RGB numpy view. Returns '' when no backend is available or OCR fails —
+    callers must treat '' as "no text", never as an error.
+    """
+    trocr = _try_trocr()
+    if trocr is not None:
+        enc_sess, dec_sess, tokenizer, start_id = trocr
+        try:
+            text = _ocr_pil_trocr(img, enc_sess, dec_sess, tokenizer, start_id)
+            if text:
+                return text[:2000]
+        except Exception:
+            pass
+    reader = _get_reader()
+    if reader is None:
+        return ""
+    try:
+        import numpy as _np
+        results = reader.readtext(_np.asarray(img.convert("RGB")), detail=0,
+                                  paragraph=True)
+        return "\n".join(results)
+    except Exception:
+        return ""
+
+
+def _ocr_pil_trocr(img, enc_sess, dec_sess, tokenizer, start_id) -> str:
+    arr = _preprocess(img)
+    enc_input = enc_sess.get_inputs()[0].name
+    encoder_out = np.asarray(
+        enc_sess.run(None, {enc_input: arr})[0], dtype=np.float32
+    )
+    return _greedy_decode(encoder_out, dec_sess, tokenizer, start_id)
 
 
 def ocr_available() -> bool:
