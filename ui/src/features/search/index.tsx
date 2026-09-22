@@ -283,7 +283,7 @@ function ResultRow({ r }: { r: SearchResult }) {
             </Badge>
           )}
           <Badge variant='secondary' className='ml-auto flex-none'>
-            {(r.score * 100).toFixed(0)}% match
+            {Math.max(0, r.score * 100).toFixed(0)}% match
           </Badge>
         </div>
         <p className='truncate text-xs text-muted-foreground'>{r.path}</p>
