@@ -61,6 +61,32 @@ def test_wrong_port_origin_403(security_client):
     assert r.status_code == 403
 
 
+DESTRUCTIVE_ENDPOINTS = [
+    ("POST", "/api/wipe", None),
+    ("POST", "/api/folders", {"path": "nowhere"}),
+    ("DELETE", "/api/folders", {"path": "nowhere"}),
+    ("POST", "/api/index", None),
+    ("POST", "/api/clean", None),
+    ("POST", "/api/pause", None),
+    ("POST", "/api/resume", None),
+]
+
+
+def test_destructive_endpoints_reject_spoofed_host_and_missing_token(security_client):
+    """ROADMAP criterion 4 matrix, per destructive endpoint:
+    spoofed Host + valid token -> 403 (ordering: 403 wins over 401);
+    loopback Host + no token   -> 401;
+    loopback Host + valid token-> proceeds (not 401/403)."""
+    client, headers = security_client
+    for method, path, body in DESTRUCTIVE_ENDPOINTS:
+        r = client.request(method, path, json=body, headers={"Host": "evil.com", **headers})
+        assert r.status_code == 403, f"{method} {path} evil Host -> {r.status_code}"
+        r = client.request(method, path, json=body)
+        assert r.status_code == 401, f"{method} {path} no token -> {r.status_code}"
+        r = client.request(method, path, json=body, headers=headers)
+        assert r.status_code not in (401, 403), f"{method} {path} valid auth -> {r.status_code}"
+
+
 def test_valid_loopback_host_and_origin_pass(security_client):
     client, headers = security_client
     # Arbitrary PORT is fine — the loopback hostname is the check, not the port.
