@@ -26,3 +26,4 @@ ui/dist/
 .pytest_cache/
 
 .planning/
+.venv-arm64/
