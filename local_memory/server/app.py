@@ -21,6 +21,7 @@ from ..extractors import image_understanding
 from ..health import storage_health
 from ..pipeline import handle_change, reconcile_deletions, rescan_all_async, scan_folder, status as pipeline_status
 from ..search import query_engine
+from ..stats import full_report as stats_report
 from ..watcher import FolderWatcher
 
 app = FastAPI(title=config.APP_NAME, docs_url=None, redoc_url=None)
@@ -257,6 +258,22 @@ def api_open(body: OpenIn):
     except Exception as exc:  # short error string only — no path leakage
         return JSONResponse({"error": f"could not open file ({type(exc).__name__})"}, status_code=500)
     return {"opened": True}
+
+
+@app.get("/api/stats")
+def api_stats():
+    """Aggregate statistics for the Statistics page. All sections are guarded
+    in local_memory/stats.py — this endpoint never 500s on partial failure."""
+    watcher_running = False
+    try:
+        watcher_running = bool(watcher.observer and watcher.observer.is_alive())
+    except Exception:
+        pass
+    try:
+        pipeline = dict(pipeline_status())
+    except Exception:
+        pipeline = None
+    return stats_report(watcher_running=watcher_running, pipeline=pipeline)
 
 
 @app.get("/api/health")

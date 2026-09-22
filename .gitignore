@@ -7,7 +7,7 @@ venv/
 .pytest_cache/
 
 # Local index data — never commit user content or embeddings
-data/
+/data/
 *.db
 *.sqlite3
 models/
@@ -27,3 +27,5 @@ ui/dist/
 
 .planning/
 .venv-arm64/
+
+real/

@@ -29,6 +29,34 @@ export interface SearchResult {
   snippet_source?: 'ocr' | 'chunk' | 'name'
 }
 
+export interface StatsReport {
+  database: {
+    index_db_bytes: number
+    wal_bytes: number
+    shm_bytes: number
+    thumbnails_bytes: number
+    total_bytes: number
+  }
+  files: {
+    total: number
+    by_kind: { kind: string; count: number; bytes: number }[]
+    by_extension: { ext: string; count: number; bytes: number }[]
+    by_folder: { folder: string; count: number; bytes: number }[]
+  }
+  index: {
+    total_chunks: number
+    embedded_chunks: number
+    images_understood: number
+    ocr_files: number
+    db_page_count: number
+    db_page_size: number
+  }
+  activity: {
+    last_scan: { status: string; queued: number; done: number; last_file: string }
+    watcher_running: boolean
+  }
+}
+
 export interface HealthReport {
   summary: { files: number; chunks: number; images: number; total_bytes: number; total_human: string }
   per_folder: { folder: string; count: number; bytes: number; bytes_human: string; kinds: Record<string, number> }[]
@@ -86,6 +114,7 @@ export const api = {
   pause: () => req<{ paused: boolean }>('/api/pause', { method: 'POST' }),
   resume: () => req<{ paused: boolean }>('/api/resume', { method: 'POST' }),
   health: () => req<HealthReport>('/api/health'),
+  stats: () => req<StatsReport>('/api/stats'),
   wipe: () => req<{ wiped: Record<string, boolean> }>('/api/wipe', { method: 'POST' }),
   openFile: (fileId: number) =>
     req<{ opened: boolean }>('/api/open', {
