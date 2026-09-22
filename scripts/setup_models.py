@@ -56,10 +56,16 @@ TARGETS = [
 ]
 
 # Optional NPU extras (compiled via AI Hub on the Snapdragon target).
-TROCR_URL = "https://huggingface.co/microsoft/trocr-small-printed/resolve/main/onnx/model.onnx"
+# TrOCR: pre-exported community ONNX (microsoft/trocr-small-printed ships no
+# onnx/model.onnx — that URL 404s). Files land under models/trocr/.
+TROCR_BASE = "https://huggingface.co/onnx-community/trocr-small-printed-ONNX/resolve/main/"
+TROCR_TARGETS = [
+    ("trocr/encoder_model.onnx", [TROCR_BASE + "encoder_model.onnx"]),
+    ("trocr/decoder_model_merged.onnx", [TROCR_BASE + "decoder_model_merged.onnx"]),
+    ("trocr/trocr-tokenizer.json", [TROCR_BASE + "tokenizer.json"]),
+]
 QWEN_URL = "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/main/onnx/model.onnx"
 OPTIONAL = [
-    ("trocr-small-printed.onnx", TROCR_URL),
     ("qwen3-0.6b.onnx", QWEN_URL),
 ]
 
@@ -137,13 +143,14 @@ def main() -> int:
     targets = list(TARGETS)
     import sys as _sys
     if "--trocr" in _sys.argv or "--all" in _sys.argv:
-        targets.append(OPTIONAL[0])
+        targets.extend(TROCR_TARGETS)
     if "--qwen" in _sys.argv or "--all" in _sys.argv:
-        targets.append(OPTIONAL[1])
+        targets.extend(OPTIONAL)
     for name, urls in targets:
         if isinstance(urls, str):
             urls = [urls]
         dest = MODELS_DIR / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.exists() and dest.stat().st_size > 100_000:
             print(f"[ok] {name} already present")
             continue

@@ -49,11 +49,14 @@ def doctor() -> None:
     print(f"  CPU workers    : {workers}  (Oryon pool, LOCAL_MEMORY_WORKERS overrides)")
     for name in ("nomic-embed-text.onnx", "clip-vit-b32-image.onnx", "clip-vit-b32-text.onnx",
                  "nomic-embed-text.serialized", "clip-vit-b32-image.serialized",
-                 "trocr-small-printed.onnx", "qwen3-0.6b.onnx"):
+                 "trocr/encoder_model.onnx", "trocr/decoder_model_merged.onnx", "qwen3-0.6b.onnx"):
         path = config.MODELS_DIR / name
         tag = "OK" if path.exists() else ("missing — run scripts/setup_models.py" if name.endswith(".onnx") else "optional")
         print(f"  model {name:28s}: {tag}")
     print(f"  OCR backend    : {ocr.active_backend()}")
+    hint = ocr.ocr_hint()
+    if hint:
+        print(f"  OCR setup      : {hint}")
     try:
         from .search.query_rewrite import rewrite as _rw
         print(f"  query rewrite  : {_rw('invoice from last month')['backend']}")
