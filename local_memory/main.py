@@ -92,6 +92,20 @@ def doctor() -> None:
         print(f"  vector store   : { _vs.stats()}")
     except Exception:
         pass
+    try:
+        from .store import database as _db
+        _fts = _db.fts_status()
+        if not _fts.get("available"):
+            print("  fts index      : unavailable")
+        elif _fts.get("in_sync"):
+            print(f"  fts index      : synced ({_fts['chunks']} chunks, {_fts['files']} files)")
+        else:
+            print(
+                f"  fts index      : backfill needed "
+                f"({_fts['chunks']} chunks, {_fts['files']} files)"
+            )
+    except Exception:
+        print("  fts index      : unavailable")
 
 
 def main() -> None:

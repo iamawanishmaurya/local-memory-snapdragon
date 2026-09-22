@@ -309,6 +309,19 @@ def startup() -> None:
     config.auth_token()
     database.init_db()
     vector_store.init_db()
+    # FTS backfill (D-02): create/repair the FTS5 indexes BEFORE the reconcile
+    # sweep, so deletions fire into a populated index. Idempotent — a healthy
+    # index skips the rebuild.
+    try:
+        import logging
+
+        fts = database.backfill_fts()
+        if fts.get("rebuilt"):
+            logging.getLogger(__name__).info("FTS backfill rebuilt: %s", fts)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("FTS backfill failed")
     folders = config.watched_folders()
     # Reconcile sweep (D-06): self-heal deletions that happened while the app
     # was off — before the watcher starts, so events never race the sweep.
