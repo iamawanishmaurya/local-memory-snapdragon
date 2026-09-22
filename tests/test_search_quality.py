@@ -217,3 +217,30 @@ def test_bm25_query_plan_uses_fts_index():
     )
     detail2 = " ".join(r["detail"] for r in plan2)
     assert "SCAN files" not in detail2.replace("files_fts", ""), detail2
+
+
+# --- Task 3: fts_quote edge cases + TRACER slice -----------------------------
+
+
+def test_fts_metacharacters_safely_quoted():
+    """FTS5 query syntax in user input must never raise (research §6)."""
+    for q in ('pen" OR (', 'blue" NOT book NEAR/10(', '"', "()*:", "a AND b OR c"):
+        res = query_engine.search(q)
+        assert isinstance(res, list)
+
+
+def test_tracer_blue_book_end_to_end():
+    """TRACER SLICE: text file → chunks → trigger → FTS index → BM25 →
+    fused result with an FTS5 <mark> snippet — proven model-free."""
+    docs = _HOME / "tracer_docs"
+    docs.mkdir(exist_ok=True)
+    _make_file(docs, "notes.txt", "blue book on the desk with a pen and a lamp nearby")
+    assert scan_folder(str(docs)) == 1
+
+    results = query_engine.search("blue book")
+    assert results, "tracer query returned nothing"
+    hit = next((r for r in results if r["name"] == "notes.txt"), None)
+    assert hit is not None, f"notes.txt not in results: {[r['name'] for r in results]}"
+    assert hit["match_keyword"] > 0
+    assert "<mark>" in hit["snippet"] or "blue book" in hit["snippet"].lower(), hit["snippet"]
+    assert hit["snippet_source"] in ("chunk", "ocr", "name")
