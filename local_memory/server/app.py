@@ -1,0 +1,205 @@
+"""Layer 6 — Local web UI server.
+
+Binds to 127.0.0.1 ONLY: the interface is never reachable from the network.
+All state lives in the local SQLite database; there is no external service.
+"""
+from __future__ import annotations
+
+import base64
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
+
+from .. import config, privacy
+from ..embeddings import base as emb_base
+from ..extractors import image_understanding
+from ..health import storage_health
+from ..pipeline import handle_change, rescan_all_async, scan_folder, status as pipeline_status
+from ..search import query_engine
+from ..watcher import FolderWatcher
+
+app = FastAPI(title=config.APP_NAME, docs_url=None, redoc_url=None)
+watcher = FolderWatcher(handle_change)
+
+# Built shadcn-admin UI (ui/dist). Falls back to the bundled single-file UI
+# when the frontend hasn't been built yet.
+UI_DIST = Path(__file__).resolve().parent.parent.parent / "ui" / "dist"
+
+
+class FolderIn(BaseModel):
+    path: str
+
+
+class SearchIn(BaseModel):
+    query: str
+    top_k: int = 12
+
+
+@app.get("/")
+def index():
+    if (UI_DIST / "index.html").exists():
+        return FileResponse(UI_DIST / "index.html")
+    return FileResponse(Path(__file__).parent / "static" / "index.html")
+
+
+# Serve the built SPA assets; the client-side-route catch-all is registered
+# at the bottom of this module, after all /api routes, so it never shadows them.
+if UI_DIST.is_dir():
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/assets", StaticFiles(directory=UI_DIST / "assets"), name="assets")
+    app.mount("/images", StaticFiles(directory=UI_DIST / "images"), name="images")
+
+
+@app.get("/api/status")
+def api_status():
+    import os as _os
+    from ..store import database
+    from ..extractors import ocr as _ocr
+    prov = emb_base.provider_report()
+    return {
+        "app": config.APP_NAME,
+        "version": "0.1.0",
+        "paused": privacy.is_paused(),
+        "pipeline": pipeline_status(),
+        "watched_folders": config.watched_folders(),
+        "npu": {
+            "providers_available": prov["available"],
+            "qnn_available": prov["qnn_available"],
+            "htp_mode": prov["htp_mode"],
+            "batch": prov["default_batch"],
+        },
+        "cpu": {
+            "cores": _os.cpu_count(),
+            "workers": max(2, min(10, (_os.cpu_count() or 8) - 2)),
+        },
+        "gpu": {"dml_available": prov["dml_available"]},
+        "ocr_backend": _ocr.active_backend(),
+        "stats": database.stats() if config.DB_PATH.exists() else {"files": 0, "chunks": 0, "images": 0, "total_bytes": 0},
+    }
+
+
+@app.post("/api/folders")
+def api_add_folder(body: FolderIn):
+    p = Path(body.path)
+    if not p.is_dir():
+        return JSONResponse({"error": f"Not a folder: {body.path}"}, status_code=400)
+    folders = config.add_watched_folder(str(p))
+    _restart_watcher(folders)
+    rescan_all_async(folders)
+    return {"watched_folders": folders}
+
+
+@app.delete("/api/folders")
+def api_remove_folder(body: FolderIn):
+    folders = config.remove_watched_folder(body.path)
+    _restart_watcher(folders)
+    return {"watched_folders": folders}
+
+
+@app.post("/api/index")
+def api_index_now():
+    folders = config.watched_folders()
+    rescan_all_async(folders)
+    return {"started": True, "folders": folders}
+
+
+@app.post("/api/pause")
+def api_pause():
+    privacy.set_paused(True)
+    return {"paused": True}
+
+
+@app.post("/api/resume")
+def api_resume():
+    privacy.set_paused(False)
+    return {"paused": False}
+
+
+@app.post("/api/search")
+def api_search(body: SearchIn):
+    return {"query": body.query, "results": query_engine.search(body.query, body.top_k)}
+
+
+@app.get("/api/health")
+def api_health():
+    return storage_health.health_report()
+
+
+@app.get("/api/thumbnail")
+def api_thumbnail(path: str):
+    """Serve the cached thumbnail for an indexed image."""
+    thumb = image_understanding.make_thumbnail(Path(path))
+    if thumb and thumb.exists():
+        return FileResponse(thumb, media_type="image/jpeg")
+    return JSONResponse({"error": "no thumbnail"}, status_code=404)
+
+
+@app.post("/api/wipe")
+def api_wipe():
+    from ..store import database, vector_store
+    watcher.stop()
+    removed = privacy.wipe_all()
+    try:
+        vector_store.wipe()
+    except Exception:
+        pass
+    database.init_db()
+    return {"wiped": removed}
+
+
+@app.post("/api/clean")
+def api_clean():
+    """Safe cleanup: prune missing files, orphan chunks, vacuum. Keeps settings."""
+    return {"cleaned": privacy.clean_orphans(), "usage": privacy.storage_usage()}
+
+
+@app.get("/api/bench")
+def api_bench():
+    from ..bench import run_all
+    return {"results": run_all()}
+
+
+@app.get("/api/suggest-folders")
+def api_suggest_folders():
+    suggestions = []
+    for name in config.DEFAULT_WATCHED:
+        p = config.user_profile_dir(name)
+        if p.is_dir():
+            suggestions.append(str(p))
+    return {"suggestions": suggestions}
+
+
+def _restart_watcher(folders: list[str]) -> None:
+    watcher.start(folders)
+
+
+@app.on_event("startup")
+def startup() -> None:
+    from ..store import database, vector_store
+    # Storage relocation (D-04/D-05): copy legacy repo data/ into the new home
+    # BEFORE any SQLite connection opens, then create fresh dirs.
+    fallback = config.migrate_home()
+    if fallback:
+        print(f"[config] migration failed — operating on legacy path: {fallback}")
+    config.ensure_dirs()
+    database.init_db()
+    vector_store.init_db()
+    folders = config.watched_folders()
+    if folders:
+        watcher.start(folders)
+        rescan_all_async(folders)
+
+
+# Client-side route fallback for the built SPA — registered LAST so every
+# /api route defined above wins over it.
+if (UI_DIST / "index.html").exists():
+
+    @app.get("/{spa_path:path}")
+    def spa(spa_path: str):
+        candidate = UI_DIST / spa_path
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(UI_DIST / "index.html")
