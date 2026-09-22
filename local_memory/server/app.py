@@ -231,6 +231,34 @@ def api_search(body: SearchIn):
     return {"query": q, "results": query_engine.search(q, body.top_k)}
 
 
+class OpenIn(BaseModel):
+    file_id: int
+
+
+@app.post("/api/open")
+def api_open(body: OpenIn):
+    """Open an indexed file with the OS default application.
+
+    localhost-only by design: the middleware (D-02/D-03) already enforces a
+    loopback Host and a Bearer token on every /api/* route. The caller supplies
+    a numeric file id — never a path — so only files that are actually in the
+    index can be opened, and only if they still exist on disk.
+    """
+    from ..store import database
+
+    row = database.file_by_id(body.file_id)
+    if row is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    path = Path(row["path"])
+    if not path.is_file():
+        return JSONResponse({"error": "file no longer on disk"}, status_code=410)
+    try:
+        os.startfile(str(path))  # Windows: opens with the default associated app
+    except Exception as exc:  # short error string only — no path leakage
+        return JSONResponse({"error": f"could not open file ({type(exc).__name__})"}, status_code=500)
+    return {"opened": True}
+
+
 @app.get("/api/health")
 def api_health():
     return storage_health.health_report()
