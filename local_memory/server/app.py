@@ -8,7 +8,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -39,9 +39,39 @@ class SearchIn(BaseModel):
 
 @app.get("/")
 def index():
-    if (UI_DIST / "index.html").exists():
-        return FileResponse(UI_DIST / "index.html")
-    return FileResponse(Path(__file__).parent / "static" / "index.html")
+    return _serve_index()
+
+
+def _serve_index():
+    """Serve the SPA shell with the auth token injected invisibly (D-01).
+
+    Token injection is per-response: the token is NEVER written into ui/dist
+    on disk. Both the index route and the SPA catch-all fallback use this so
+    client-route reloads also receive the token.
+    """
+    candidates = [UI_DIST / "index.html", Path(__file__).parent / "static" / "index.html"]
+    for candidate in candidates:
+        if candidate.exists():
+            html = candidate.read_text(encoding="utf-8")
+            script = f'<script>window.__LM_TOKEN__="{config.auth_token()}"</script>'
+            html = html.replace("</head>", f"{script}</head>", 1)
+            from fastapi.responses import HTMLResponse
+            return HTMLResponse(html)
+    return JSONResponse({"error": "UI not built"}, status_code=404)
+
+
+@app.middleware("http")
+async def token_auth_middleware(request: Request, call_next):
+    """Require `Authorization: Bearer <token>` on every /api/* route (D-02).
+
+    Fail closed: any missing/malformed/wrong token is 401. SPA-serving routes
+    (/, /assets, /images, catch-all) stay token-free so the UI can load.
+    """
+    if request.url.path.startswith("/api/"):
+        expected = f"Bearer {config.auth_token()}"
+        if request.headers.get("Authorization", "") != expected:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return await call_next(request)
 
 
 # Serve the built SPA assets; the client-side-route catch-all is registered
@@ -185,6 +215,9 @@ def startup() -> None:
     if fallback:
         print(f"[config] migration failed — operating on legacy path: {fallback}")
     config.ensure_dirs()
+    # Prime the auth token (D-01) so the token file exists before the UI is
+    # ever served and the middleware always has a value to compare against.
+    config.auth_token()
     database.init_db()
     vector_store.init_db()
     folders = config.watched_folders()
@@ -209,4 +242,4 @@ if (UI_DIST / "index.html").exists():
         candidate = UI_DIST / spa_path
         if candidate.is_file():
             return FileResponse(candidate)
-        return FileResponse(UI_DIST / "index.html")
+        return _serve_index()
