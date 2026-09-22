@@ -170,3 +170,50 @@ def test_scan_folder_keeps_fts_in_sync():
     st = database.fts_status()
     assert st["in_sync"] is True
     assert _match("chunks_fts", "zebra") != []
+
+
+# --- Task 2: BM25 ranked lists in query_engine -------------------------------
+
+
+def test_bm25_replaces_like_scan():
+    import inspect
+
+    src = inspect.getsource(query_engine._keyword_hits)
+    assert "list_files" not in src, "_keyword_hits must not do a Python LIKE scan"
+    assert "MATCH" in inspect.getsource(query_engine._bm25_hits)
+
+
+def test_bm25_search_returns_keyword_scores():
+    docs = _HOME / "bm25_docs"
+    docs.mkdir(exist_ok=True)
+    _make_file(docs, "invoice_bstar.txt", "invoice for services rendered promptly")
+    _make_file(docs, "unrelated.txt", "gardening tips for spring tomatoes")
+    assert scan_folder(str(docs)) >= 2
+
+    results = query_engine.search("invoice")
+    assert results, "expected results"
+    hit = next((r for r in results if "invoice" in r["name"]), None)
+    assert hit is not None, "BM25 list missed the planted invoice file"
+    assert hit["match_keyword"] > 0
+
+    # A lexically-empty query still returns dense results without error.
+    res2 = query_engine.search("xyzzyqqqqzNothingMatchesThisLexically")
+    assert isinstance(res2, list)
+
+
+def test_bm25_query_plan_uses_fts_index():
+    plan = database.fts_rows(
+        "EXPLAIN QUERY PLAN SELECT c.file_id, c.id, rank FROM chunks_fts "
+        "JOIN chunks c ON c.id = chunks_fts.rowid WHERE chunks_fts MATCH ? "
+        "ORDER BY rank LIMIT 36",
+        ('"invoice"',),
+    )
+    detail = " ".join(r["detail"] for r in plan)
+    assert "VIRTUAL TABLE" in detail, detail
+    assert "SCAN chunks" not in detail.replace("chunks_fts", ""), detail
+    plan2 = database.fts_rows(
+        "EXPLAIN QUERY PLAN SELECT rowid FROM files_fts WHERE files_fts MATCH ?",
+        ('"invoice"',),
+    )
+    detail2 = " ".join(r["detail"] for r in plan2)
+    assert "SCAN files" not in detail2.replace("files_fts", ""), detail2
