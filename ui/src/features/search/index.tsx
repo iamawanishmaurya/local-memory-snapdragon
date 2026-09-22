@@ -257,7 +257,7 @@ function ResultRow({ r }: { r: SearchResult }) {
     <Card className='flex gap-4 p-4'>
       {r.kind === 'image' ? (
         <img
-          src={`/api/thumbnail?path=${encodeURIComponent(r.path)}`}
+          src={`/api/thumbnail?file_id=${r.file_id}`}
           onError={(e) => {
             ;(e.target as HTMLImageElement).replaceWith(kindFallback(r.kind))
           }}
