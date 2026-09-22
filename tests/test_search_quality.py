@@ -244,3 +244,148 @@ def test_tracer_blue_book_end_to_end():
     assert hit["match_keyword"] > 0
     assert "<mark>" in hit["snippet"] or "blue book" in hit["snippet"].lower(), hit["snippet"]
     assert hit["snippet_source"] in ("chunk", "ocr", "name")
+
+
+# --- 03-02 Task 1: RRF fusion, matched_via, snippet priority ------------------
+
+
+def test_rrf_replaces_weighted_blend():
+    """The 0.60/0.25/0.15 blend is gone — no WEIGHT_* constants, no arithmetic."""
+    import inspect
+
+    assert not hasattr(query_engine, "WEIGHT_SEMANTIC")
+    assert not hasattr(query_engine, "WEIGHT_VISUAL")
+    assert not hasattr(query_engine, "WEIGHT_KEYWORD")
+    src = inspect.getsource(query_engine.search)
+    assert "WEIGHT_SEMANTIC" not in src and "WEIGHT_VISUAL" not in src
+    assert "RRF_K" in src, "search() must fuse via the RRF constant"
+    assert "1.0 / (RRF_K" in src
+
+
+def test_keyword_only_file_top3_dense_blind(monkeypatch):
+    """A file ranking ONLY via BM25 (dense suppressed) reaches top-3 via RRF."""
+    docs = _HOME / "rrf_kw_docs"
+    docs.mkdir(exist_ok=True)
+    _make_file(docs, "quokkaprint.txt", "zqxjokerfile manual revision seven appendix")
+    for i in range(6):
+        _make_file(docs, f"distractor{i}.txt", f"ordinary prose passage number {i} about gardens")
+    assert scan_folder(str(docs)) >= 7
+
+    # Dense engines blind: both vector searches return nothing.
+    monkeypatch.setattr(query_engine.vector_store, "search", lambda *a, **k: [])
+
+    results = query_engine.search("zqxjokerfile")
+    assert results, "keyword-only search returned nothing"
+    top3 = {r["name"] for r in results[:3]}
+    assert "quokkaprint.txt" in top3, f"keyword-only file not top-3: {[r['name'] for r in results]}"
+    hit = next(r for r in results if r["name"] == "quokkaprint.txt")
+    assert hit["matched_via"] == "keyword"
+
+
+def test_matched_via_three_cases(monkeypatch):
+    """matched_via is 'keyword' / 'semantic' / 'both' for the planted cases."""
+    docs = _HOME / "matched_via_docs"
+    docs.mkdir(exist_ok=True)
+    _make_file(docs, "kw_only.txt", "zqxkwonlyterm stands alone in this file")
+    _make_file(docs, "sem_only.txt", "completely unrelated prose about tomatoes")
+    _make_file(docs, "both_file.txt", "zqxbothterm appears here and dense agrees")
+    assert scan_folder(str(docs)) >= 3
+    fids = {}
+    for name in ("kw_only.txt", "sem_only.txt", "both_file.txt"):
+        row = database.get_file(str(docs / name))
+        fids[name] = row["id"]
+
+    real_search = query_engine.vector_store.search
+
+    def fake_search(space, vec, top_k):
+        hits = []
+        if space == "text":
+            hits = [
+                {"file_id": fids["sem_only.txt"], "ordinal": 0, "score": 0.91},
+                {"file_id": fids["both_file.txt"], "ordinal": 0, "score": 0.85},
+            ]
+        return hits[:top_k]
+
+    monkeypatch.setattr(query_engine.vector_store, "search", fake_search)
+    results = query_engine.search("zqxkwonlyterm zqxbothterm")
+    by_name = {r["name"]: r for r in results}
+    assert by_name["kw_only.txt"]["matched_via"] == "keyword"
+    assert by_name["sem_only.txt"]["matched_via"] == "semantic"
+    assert by_name["both_file.txt"]["matched_via"] == "both"
+
+
+def test_fts_emptied_dense_ordering_unchanged(monkeypatch):
+    """Degradation (pre-backfill): with the FTS layer gone, dense ordering is
+    IDENTICAL to the ordering with FTS populated (for a dense-driven query)."""
+    docs = _HOME / "rrf_degrade_docs"
+    docs.mkdir(exist_ok=True)
+    for i in range(5):
+        _make_file(docs, f"dense{i}.txt", f"filler text volume {i} nothing special")
+    assert scan_folder(str(docs)) >= 5
+    fids = [database.get_file(str(docs / f"dense{i}.txt"))["id"] for i in range(5)]
+    # Dense-driven probe: synthetic ranks, deterministic expected order.
+    dense_hits = [
+        {"file_id": fid, "ordinal": 0, "score": 1.0 - 0.1 * i} for i, fid in enumerate(fids)
+    ]
+    monkeypatch.setattr(
+        query_engine.vector_store,
+        "search",
+        lambda space, vec, top_k: dense_hits[:top_k] if space == "text" else [],
+    )
+    query = "qqzzdenseprobenomatch"
+
+    with_fts = [r["file_id"] for r in query_engine.search(query, top_k=10)]
+    assert with_fts == fids, "sanity: dense ordering expected"
+
+    # Wipe the derived FTS layer (tables + triggers) exactly as a pre-backfill
+    # launch would find it — content tables untouched.
+    for stmt in (
+        "DROP TRIGGER IF EXISTS chunks_ai", "DROP TRIGGER IF EXISTS chunks_ad",
+        "DROP TRIGGER IF EXISTS files_ai", "DROP TRIGGER IF EXISTS files_au",
+        "DROP TRIGGER IF EXISTS files_ad",
+        "DROP TABLE IF EXISTS chunks_fts", "DROP TABLE IF EXISTS files_fts",
+    ):
+        database.fts_rows(stmt)
+
+    without_fts = [r["file_id"] for r in query_engine.search(query, top_k=10)]
+    assert without_fts, "search must still return dense results with FTS dropped"
+    assert without_fts == with_fts, "FTS loss must not change dense ordering"
+
+    database.init_db()  # restore schema for later tests
+    assert database.backfill_fts()["rebuilt"] is True
+
+
+def test_embedder_failure_still_returns_bm25(monkeypatch):
+    """Degradation the other way: text embedder raising leaves BM25 results."""
+    docs = _HOME / "rrf_embfail_docs"
+    docs.mkdir(exist_ok=True)
+    _make_file(docs, "embfail.txt", "zqxembfailterm invoice appendix")
+    assert scan_folder(str(docs)) >= 1
+
+    def _boom():
+        raise RuntimeError("NPU offline")
+
+    monkeypatch.setattr(query_engine, "get_text_embedder", _boom)
+
+    results = query_engine.search("zqxembfailterm")
+    assert results, "BM25 results must survive embedder failure"
+    hit = next(r for r in results if r["name"] == "embfail.txt")
+    assert hit["matched_via"] == "keyword"
+
+
+def test_image_ocr_snippet_priority(monkeypatch):
+    """D-06: image-kind files quote their OCR text (files_fts col 1) on a
+    keyword hit; snippet_source is 'ocr'."""
+    docs = _HOME / "rrf_ocr_docs"
+    docs.mkdir(exist_ok=True)
+    p = docs / "receipt_scan.png"
+    p.write_bytes(b"\x89PNG fake bytes")
+    fid = database.upsert_file(str(p), str(docs), ".png", 10, 1.0, "image",
+                               ocr_text="zqxocrterm total due 42 dollars")
+    database.replace_chunks(fid, [(0, "generic chunk text here")])
+    monkeypatch.setattr(query_engine.vector_store, "search", lambda *a, **k: [])
+
+    results = query_engine.search("zqxocrterm")
+    hit = next(r for r in results if r["file_id"] == fid)
+    assert hit["snippet_source"] == "ocr", hit
+    assert "zqxocrterm" in hit["snippet"].lower() or "<mark>" in hit["snippet"], hit["snippet"]
