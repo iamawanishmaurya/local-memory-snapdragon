@@ -107,6 +107,19 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff"}
 # Jupyter notebooks: JSON, ingested via markdown headers / first cells.
 IPYNB_EXTS = {".ipynb"}
 
+# Office documents with REAL text extraction (D-02): routed through
+# extract_text (kinds "slides"/"spreadsheet"), not the binary metadata path.
+PPTX_EXTS = {".pptx"}
+XLSX_EXTS = {".xlsx"}
+
+# Media files (D-03): metadata-only via mutagen tags, kind "media".
+MEDIA_KINDS = {
+    ".mp3": "media", ".m4a": "media", ".flac": "media", ".ogg": "media",
+    ".opus": "media", ".wav": "media", ".wma": "media",
+    ".mp4": "media", ".mkv": "media", ".mov": "media", ".avi": "media",
+    ".webm": "media",
+}
+
 # Binary types we never open for content but still make findable by
 # filename/metadata (accuracy eval gap #1). ext/compound-suffix -> kind.
 BINARY_KINDS = {
@@ -117,7 +130,8 @@ BINARY_KINDS = {
     ".msix": "executable", ".appx": "executable", ".apk": "executable",
     ".iso": "disk-image", ".img": "disk-image", ".dmg": "disk-image",
     ".vhd": "disk-image", ".vhdx": "disk-image",
-    ".parquet": "data", ".xlsx": "data", ".pptx": "data",
+    ".parquet": "data",
+    **MEDIA_KINDS,
 }
 # Compound suffixes checked against the full filename before the bare ext
 # (Path("x.tar.gz").suffix is ".gz").
@@ -129,6 +143,12 @@ ARCHIVE_ENTRY_LIMIT = 20
 
 # Notebook ingestion caps.
 IPYNB_MAX_CHARS = 8000
+
+# Office extraction caps (D-02): huge decks/workbooks must not stall indexing.
+PPTX_MAX_SLIDES = 200
+XLSX_MAX_ROWS = 2000
+XLSX_MAX_SHEETS = 10
+OFFICE_MAX_CHARS = 8000
 
 # OCR of PDF-embedded page images (accuracy eval gap #2).
 PDF_OCR_MAX_PAGES = 5          # OCR at most the first N text-free pages
@@ -149,7 +169,8 @@ def binary_kind(path: str | Path) -> str | None:
 
 def indexable_exts() -> set[str]:
     """Every extension the scanner should pick up."""
-    return TEXT_EXTS | PDF_EXTS | DOCX_EXTS | IMAGE_EXTS | IPYNB_EXTS | set(BINARY_KINDS) | set(BINARY_COMPOUND)
+    return (TEXT_EXTS | PDF_EXTS | DOCX_EXTS | PPTX_EXTS | XLSX_EXTS
+            | IMAGE_EXTS | IPYNB_EXTS | set(BINARY_KINDS) | set(BINARY_COMPOUND))
 
 DEFAULT_WATCHED = ["Downloads", "Documents", "Desktop", "Pictures"]
 
