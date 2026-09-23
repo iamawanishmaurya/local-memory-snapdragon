@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   FileText,
@@ -24,7 +24,7 @@ import { ProfileDropdown } from '@/components/profile-dropdown'
 import { ThemeSwitch } from '@/components/theme-switch'
 import { Search as GlobalSearch } from '@/components/search'
 import { ConfigDrawer } from '@/components/config-drawer'
-import { api, fmtBytes, fmtDate, type SearchResult, type Status } from '@/lib/api'
+import { api, fmtBytes, fmtDate, revokeThumbnailUrl, thumbnailUrl, type SearchResult, type Status } from '@/lib/api'
 
 const EXAMPLES = ['pen with blue book', 'invoice from last month', 'error screenshots']
 
@@ -256,9 +256,28 @@ function snippetPrefix(source: SearchResult['snippet_source']): string {
   return ''
 }
 
+/** Bearer cannot ride <img src>, so thumbnails load via fetch → blob →
+ * object URL (cached per file_id in api.ts); revoked on unmount. */
+function useThumbnail(fileId: number | string | undefined): string | null {
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    if (fileId === undefined) return
+    let alive = true
+    thumbnailUrl(fileId)
+      .then((u) => alive && setUrl(u))
+      .catch(() => alive && setUrl(null))
+    return () => {
+      alive = false
+      revokeThumbnailUrl(fileId)
+    }
+  }, [fileId])
+  return url
+}
+
 function ResultRow({ r }: { r: SearchResult }) {
   const via = r.matched_via
   const snippetBody = r.highlight ?? r.snippet
+  const thumb = useThumbnail(r.kind === 'image' ? r.file_id : undefined)
   const [openState, setOpenState] = useState<'idle' | 'pending' | 'error'>('idle')
 
   const openFile = async () => {
@@ -275,14 +294,20 @@ function ResultRow({ r }: { r: SearchResult }) {
   return (
     <Card className='flex gap-4 p-4'>
       {r.kind === 'image' ? (
-        <img
-          src={`/api/thumbnail?file_id=${r.file_id}`}
-          onError={(e) => {
-            ;(e.target as HTMLImageElement).replaceWith(kindFallback(r.kind))
-          }}
-          alt={r.name}
-          className='size-20 flex-none rounded-lg object-cover'
-        />
+        thumb ? (
+          <img
+            src={thumb}
+            onError={(e) => {
+              ;(e.target as HTMLImageElement).replaceWith(kindFallback(r.kind))
+            }}
+            alt={r.name}
+            className='size-20 flex-none rounded-lg object-cover'
+          />
+        ) : (
+          <div className='flex size-20 flex-none animate-pulse items-center justify-center rounded-lg bg-muted text-muted-foreground'>
+            {KIND_ICONS[r.kind] ?? <File className='size-5' />}
+          </div>
+        )
       ) : (
         <div className='flex size-20 flex-none items-center justify-center rounded-lg bg-muted text-muted-foreground'>
           {KIND_ICONS[r.kind] ?? <File className='size-5' />}

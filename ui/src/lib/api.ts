@@ -74,7 +74,44 @@ declare global {
 }
 
 // Module-scoped: read once; arrives via served HTML, never via the JS bundle.
-const LM_TOKEN: string = window.__LM_TOKEN__ ?? ''
+const LM_TOKEN: string = (window as unknown as { __LM_TOKEN__?: string }).__LM_TOKEN__ ?? ''
+
+/** Bearer header for raw fetch calls that bypass req() (e.g. blob thumbnails). */
+function authHeader(): Record<string, string> {
+  return LM_TOKEN ? { Authorization: `Bearer ${LM_TOKEN}` } : {}
+}
+
+/** Blob-URL cache for thumbnails: repeat searches reuse the object URL. */
+const thumbCache = new Map<string, string>()
+
+/** Fetch a thumbnail with Bearer auth and return a cached object URL.
+ * <img src> cannot send Authorization (401 on stage) so callers must use
+ * this helper and render <img src={objectUrl}>. */
+export async function thumbnailUrl(file_id: number | string): Promise<string> {
+  const key = String(file_id)
+  const cached = thumbCache.get(key)
+  if (cached) return cached
+  const res = await fetch('/api/thumbnail?file_id=' + encodeURIComponent(key), {
+    headers: { ...authHeader() },
+  })
+  if (!res.ok) {
+    throw new Error(`thumbnail ${res.status}`)
+  }
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  thumbCache.set(key, url)
+  return url
+}
+
+/** Revoke a cached thumbnail object URL (call on unmount / file_id change). */
+export function revokeThumbnailUrl(file_id: number | string): void {
+  const key = String(file_id)
+  const url = thumbCache.get(key)
+  if (url) {
+    thumbCache.delete(key)
+    URL.revokeObjectURL(url)
+  }
+}
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
