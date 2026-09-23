@@ -24,6 +24,12 @@ from ..search import query_engine
 from ..stats import full_report as stats_report
 from ..watcher import FolderWatcher
 
+try:
+    from .. import netguard, perf as _perf
+except Exception:  # pragma: no cover — measurement must never break serving
+    netguard = None
+    _perf = None
+
 app = FastAPI(title=config.APP_NAME, docs_url=None, redoc_url=None)
 watcher = FolderWatcher(handle_change)
 
@@ -229,7 +235,11 @@ def api_search(body: SearchIn):
         return JSONResponse({"error": "empty query"}, status_code=400)
     q = body.query[:MAX_QUERY_CHARS]
     # Zero results stays a clean 200 {"results": []} — the UI adds the hint.
-    return {"query": q, "results": query_engine.search(q, body.top_k)}
+    results = query_engine.search(q, body.top_k)
+    # Judge-visible engine latency (DEMO-05); mirrors the perf.py window.
+    resp = JSONResponse({"query": q, "results": results})
+    resp.headers["X-Query-Ms"] = f"{_perf.latency_stats()['p50_ms']}"
+    return resp
 
 
 class OpenIn(BaseModel):
@@ -408,6 +418,100 @@ def api_bench():
     return {"results": run_all()}
 
 
+@app.get("/api/network")
+def api_network():
+    """Live offline proof (DEMO-04 / D-04). Count-only; never blocks or 500s."""
+    if netguard is None:
+        return {"outbound_calls": 0, "established_non_loopback": 0,
+                "since": None, "last_audit": None}
+    try:
+        return netguard.report()
+    except Exception as exc:
+        return JSONResponse({"error": f"audit failed ({type(exc).__name__})"}, status_code=200)
+
+
+@app.get("/api/perf")
+def api_perf():
+    """NPU / latency measurements for the Statistics card (DEMO-05 / D-05).
+    Every section guarded — never 500s, model-free machines get zeros."""
+    if _perf is None:
+        return {"npu": {"requested": "QNN", "active": "unknown", "npu_live": False},
+                "cold_start_s": None, "latency": {"count": 0, "p50_ms": 0.0, "p95_ms": 0.0},
+                "throughput": {"embed_chunks_per_s": 0.0, "index_files_per_s": 0.0},
+                "corpus": {"files": 0, "chunks": 0}}
+    out = {
+        "npu": _perf.check_npu_live(),
+        "cold_start_s": _perf.record_cold_start(),
+        "latency": _perf.latency_stats(),
+        "throughput": _perf.throughput(),
+    }
+    try:
+        from ..store import database
+        s = database.stats()
+        out["corpus"] = {"files": s["files"], "chunks": s["chunks"]}
+    except Exception:
+        out["corpus"] = {"files": 0, "chunks": 0}
+    return out
+
+
+@app.post("/api/perf/reset")
+def api_perf_reset():
+    if _perf is not None:
+        _perf.reset_latency()
+    return {"reset": True}
+
+
+@app.post("/api/metrics/record")
+def api_metrics_record():
+    """Append a timestamped run block to docs/pitch-metrics.md (DEMO-05).
+    Append-only — prior runs are preserved byte-for-byte."""
+    import json as _json
+    from datetime import datetime, timezone
+
+    if _perf is None:
+        return JSONResponse({"error": "perf module unavailable"}, status_code=500)
+    npu = _perf.check_npu_live()
+    cold = _perf.record_cold_start() or {}
+    lat = _perf.latency_stats()
+    thr = _perf.throughput()
+    try:
+        from ..store import database
+        s = database.stats()
+        corpus = {"files": s["files"], "chunks": s["chunks"]}
+    except Exception:
+        corpus = {"files": 0, "chunks": 0}
+    import onnxruntime as _ort
+
+    block = {
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "device": {"cpu_cores": os.cpu_count(), "onnxruntime": _ort.__version__},
+        "npu": npu,
+        "cold_start_s": cold,
+        "latency": lat,
+        "throughput": thr,
+        "corpus": corpus,
+    }
+    metrics_path = _perf.METRICS_PATH
+    lines = []
+    if not metrics_path.exists():
+        lines.append("# Pitch Metrics\n\nAppend-only run log recorded at demo time.\n")
+    lines.append(f"\n## Run — {block['recorded_at']}\n")
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+    lines.append(f"| NPU active | {npu.get('active')} (live: {npu.get('npu_live')}) |")
+    for k, v in cold.items():
+        lines.append(f"| Cold start — {k} | {v} s |")
+    lines.append(f"| Query latency p50 / p95 | {lat['p50_ms']} / {lat['p95_ms']} ms (n={lat['count']}) |")
+    lines.append(f"| Throughput | {thr['embed_chunks_per_s']} chunks/s embed · {thr['index_files_per_s']} files/s index |")
+    lines.append(f"| Corpus | {corpus['files']} files · {corpus['chunks']} chunks |")
+    lines.append(f"| CPU cores / onnxruntime | {os.cpu_count()} / {_ort.__version__} |")
+    lines.append("\n```json\n" + _json.dumps(block, indent=2) + "\n```\n")
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(metrics_path, "a", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return {"recorded": True, "path": "docs/pitch-metrics.md"}
+
+
 @app.get("/api/suggest-folders")
 def api_suggest_folders():
     suggestions = []
@@ -434,6 +538,13 @@ def startup() -> None:
     # Prime the auth token (D-01) so the token file exists before the UI is
     # ever served and the middleware always has a value to compare against.
     config.auth_token()
+    # Outbound-network counter (DEMO-04 / D-04): installed before any serving
+    # so the Privacy-page number covers the whole process lifetime.
+    if netguard is not None:
+        try:
+            netguard.install()
+        except Exception:
+            pass
     database.init_db()
     vector_store.init_db()
     # FTS backfill (D-02): create/repair the FTS5 indexes BEFORE the reconcile

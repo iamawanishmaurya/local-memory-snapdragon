@@ -183,6 +183,27 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ cleanup_folder }),
     }),
+  network: () =>
+    req<NetworkReport>('/api/network'),
+  perf: () => req<PerfReport>('/api/perf'),
+  resetPerf: () => req<{ reset: boolean }>('/api/perf/reset', { method: 'POST' }),
+  recordMetrics: () =>
+    req<{ recorded: boolean; path: string }>('/api/metrics/record', { method: 'POST' }),
+}
+
+export interface NetworkReport {
+  outbound_calls: number
+  established_non_loopback: number
+  since: string | null
+  last_audit: string | null
+}
+
+export interface PerfReport {
+  npu: { requested: string; active: string; npu_live: boolean; note?: string }
+  cold_start_s: Record<string, number> | null
+  latency: { count: number; p50_ms: number; p95_ms: number }
+  throughput: { embed_chunks_per_s: number; index_files_per_s: number }
+  corpus: { files: number; chunks: number }
 }
 
 export function fmtBytes(n: number): string {

@@ -122,6 +122,28 @@ def _make_snippet(file_id: int, ordinal: int, query: str) -> str:
     return text[:220]
 
 
+def _timed(fn):
+    """Engine-level latency recording (DEMO-05): appends every search's wall
+    time to the perf rolling window. Lazy perf import avoids cycles; a failed
+    recording never affects the result."""
+    from functools import wraps
+
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        t0 = time.perf_counter()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            try:
+                from .. import perf
+
+                perf.append_latency((time.perf_counter() - t0) * 1000)
+            except Exception:
+                pass
+    return wrapper
+
+
+@_timed
 def search(query: str, top_k: int = 12) -> list[dict]:
     if not query.strip():
         return []

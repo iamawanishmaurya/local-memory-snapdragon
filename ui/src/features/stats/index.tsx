@@ -1,4 +1,7 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Zap } from 'lucide-react'
+import { toast } from 'sonner'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Header } from '@/components/layout/header'
@@ -200,9 +203,82 @@ export function StatisticsPage() {
                 </CardContent>
               </Card>
             </div>
+
+            <NpuPerformanceCard />
           </>
         )}
       </Main>
     </>
+  )
+}
+
+/** DEMO-05 / D-05: measured, honest NPU numbers. The badge is green only
+ * when the negotiated provider is actually QNN — a silent CPU fallback says
+ * so loudly instead of demoing CPU speed as NPU speed. */
+function NpuPerformanceCard() {
+  const qc = useQueryClient()
+  const perf = useQuery({ queryKey: ['perf'], queryFn: api.perf, refetchInterval: 10_000 })
+  const record = useMutation({
+    mutationFn: api.recordMetrics,
+    onSuccess: (r) => toast.success(`Recorded to ${r.path}`),
+    onError: (e) => toast.error(String(e)),
+  })
+  const reset = useMutation({
+    mutationFn: api.resetPerf,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['perf'] }),
+  })
+  const p = perf.data
+  if (!p) return null
+  return (
+    <Card className='mt-4'>
+      <CardHeader className='flex-row items-center justify-between space-y-0'>
+        <CardTitle className='text-base'>NPU Performance</CardTitle>
+        <div className='flex gap-2'>
+          <Button size='sm' variant='outline' className='h-7 text-xs' disabled={reset.isPending} onClick={() => reset.mutate()}>
+            Reset timer
+          </Button>
+          <Button size='sm' className='h-7 text-xs' disabled={record.isPending} onClick={() => record.mutate()}>
+            Record these numbers
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className='space-y-2 text-sm'>
+        <div className='flex items-center justify-between gap-2'>
+          <span className='text-muted-foreground'>Provider (negotiated)</span>
+          <Badge variant={p.npu.npu_live ? 'default' : 'destructive'} className='gap-1'>
+            <Zap className='size-3' />
+            {p.npu.npu_live ? 'QNN active' : `CPU fallback — ${p.npu.active}`}
+          </Badge>
+        </div>
+        <div className='flex items-center justify-between'>
+          <span className='text-muted-foreground'>Cold start (text / CLIP image / CLIP text)</span>
+          <span className='tabular-nums'>
+            {p.cold_start_s
+              ? [p.cold_start_s.text_embed_s, p.cold_start_s.clip_image_s, p.cold_start_s.clip_text_s]
+                  .map((v) => (v == null ? '—' : `${v}s`))
+                  .join(' / ')
+              : '—'}
+          </span>
+        </div>
+        <div className='flex items-center justify-between'>
+          <span className='text-muted-foreground'>Query latency p50 / p95</span>
+          <span className='tabular-nums'>
+            {p.latency.p50_ms} / {p.latency.p95_ms} ms (n={p.latency.count})
+          </span>
+        </div>
+        <div className='flex items-center justify-between'>
+          <span className='text-muted-foreground'>Throughput</span>
+          <span className='tabular-nums'>
+            {p.throughput.embed_chunks_per_s} chunks/s embed · {p.throughput.index_files_per_s} files/s index
+          </span>
+        </div>
+        <div className='flex items-center justify-between'>
+          <span className='text-muted-foreground'>Measured on</span>
+          <span>
+            {p.corpus.files.toLocaleString()} files · {p.corpus.chunks.toLocaleString()} chunks
+          </span>
+        </div>
+      </CardContent>
+    </Card>
   )
 }
