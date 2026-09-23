@@ -29,3 +29,10 @@ ui/dist/
 .venv-arm64/
 
 real/
+
+# runtime/test artifacts
+.eval_server.pid
+tests/.tmpdata-*/
+.planning/eval-*
+.planning/debug_*
+.planning/*.ps1

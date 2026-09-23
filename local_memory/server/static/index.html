@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local Memory</title>
+<style>
+  :root { --bg:#0f1115; --card:#171a21; --line:#262b36; --text:#e8eaf0; --dim:#8b93a5; --accent:#5b9dff; --good:#3fb96f; --warn:#e0a13f; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; align-items:center; gap:12px; padding:14px 24px; border-bottom:1px solid var(--line); }
+  header h1 { font-size:18px; margin:0; font-weight:600; }
+  .badge { font-size:11px; padding:2px 8px; border-radius:10px; border:1px solid var(--line); color:var(--dim); }
+  .badge.npu { color:var(--good); border-color:var(--good); }
+  main { max-width:980px; margin:0 auto; padding:24px; }
+  .searchbar { display:flex; gap:8px; }
+  .searchbar input { flex:1; padding:12px 16px; font-size:16px; border-radius:10px; border:1px solid var(--line); background:var(--card); color:var(--text); outline:none; }
+  .searchbar button, .btn { padding:12px 18px; font-size:14px; border-radius:10px; border:none; background:var(--accent); color:#fff; cursor:pointer; }
+  .btn.secondary { background:var(--card); border:1px solid var(--line); color:var(--text); }
+  .btn.danger { background:#b3413f; }
+  .examples { color:var(--dim); font-size:12.5px; margin:10px 0 24px; }
+  .examples span { cursor:pointer; text-decoration:underline dotted; margin-right:14px; }
+  .result { display:flex; gap:14px; padding:14px; background:var(--card); border:1px solid var(--line); border-radius:12px; margin-bottom:10px; }
+  .thumb { width:84px; height:84px; flex:none; border-radius:8px; object-fit:cover; background:#0a0c10; display:flex; align-items:center; justify-content:center; color:var(--dim); font-size:24px; }
+  .r-body { flex:1; min-width:0; }
+  .r-name { font-weight:600; font-size:14.5px; overflow-wrap:anywhere; }
+  .r-path { color:var(--dim); font-size:12px; overflow-wrap:anywhere; margin:2px 0 6px; }
+  .r-snip { font-size:13px; color:#c4cad6; }
+  .r-meta { color:var(--dim); font-size:11.5px; margin-top:6px; }
+  .r-score { color:var(--accent); font-weight:600; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:12px; margin-top:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; }
+  .card h3 { margin:0 0 10px; font-size:14px; color:var(--dim); font-weight:600; text-transform:uppercase; letter-spacing:.05em; }
+  .kv { display:flex; justify-content:space-between; font-size:13px; padding:3px 0; }
+  .sugg { border-left:3px solid var(--warn); padding:8px 12px; background:#1c1a14; border-radius:6px; margin-top:8px; font-size:13px; }
+  .sugg b { display:block; margin-bottom:2px; }
+  .folders li { display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--line); font-size:13.5px; }
+  .folders { list-style:none; padding:0; margin:0; }
+  h2 { font-size:16px; margin:28px 0 10px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  .pill { font-size:11px; color:var(--dim); }
+  footer { text-align:center; color:var(--dim); font-size:12px; padding:24px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🧠 Local Memory</h1>
+  <span class="badge" id="npubadge">checking NPU…</span>
+  <span style="flex:1"></span>
+  <button class="btn secondary" id="pauseBtn" onclick="togglePause()">Pause</button>
+  <button class="btn secondary" onclick="openSettings()">Settings</button>
+  <button class="btn danger" onclick="wipe()">Wipe all data</button>
+</header>
+<main>
+  <div class="searchbar">
+    <input id="q" placeholder="Search everything… e.g. 'invoice from last month'" autofocus
+      onkeydown="if(event.key==='Enter')doSearch()">
+    <button onclick="doSearch()">Search</button>
+  </div>
+  <div class="examples">
+    Try: <span onclick="setQ('pen with blue book')">pen with blue book</span>
+    <span onclick="setQ('invoice from last month')">invoice from last month</span>
+    <span onclick="setQ('error screenshots')">error screenshots</span>
+  </div>
+  <div id="results"></div>
+
+  <div id="settings" style="display:none">
+    <h2>Watched folders</h2>
+    <div class="row" id="suggests"></div>
+    <ul class="folders" id="folderList"></ul>
+    <div class="row" style="margin-top:10px">
+      <input id="newFolder" placeholder="C:\Users\you\Documents" style="flex:1;padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text)">
+      <button class="btn" onclick="addFolder()">Add folder</button>
+      <button class="btn secondary" onclick="rescan()">Re-index now</button>
+    </div>
+    <h2>Storage health</h2>
+    <div class="cards" id="health"></div>
+  </div>
+</main>
+<footer>100% on-device · localhost only · nothing leaves this PC</footer>
+<script>
+const $ = id => document.getElementById(id);
+
+async function api(path, opts) {
+  const r = await fetch(path, opts && {headers:{'Content-Type':'application/json'}, ...opts});
+  return r.json();
+}
+
+async function refreshStatus() {
+  const s = await api('/api/status');
+  const npu = $('npubadge');
+  npu.textContent = s.npu.qnn_available ? 'NPU: QNN active ⚡' : 'NPU: QNN not loaded (CPU fallback)';
+  npu.className = 'badge' + (s.npu.qnn_available ? ' npu' : '');
+  $('pauseBtn').textContent = s.paused ? 'Resume' : 'Pause';
+  $('folderList').innerHTML = (s.watched_folders||[]).map(f =>
+    `<li><span>${f}</span><button class="btn secondary" onclick="removeFolder('${f.replace(/\\/g,'\\\\')}')">Remove</button></li>`).join('')
+    || '<li style="border:none;color:var(--dim)">No folders yet — add one below.</li>';
+  $('suggests').innerHTML = '<span class="pill">Quick add: </span>';
+}
+
+async function togglePause() {
+  const paused = $('pauseBtn').textContent === 'Pause';
+  await api(paused ? '/api/pause' : '/api/resume', {method:'POST'});
+  refreshStatus();
+}
+
+function setQ(q){ $('q').value = q; doSearch(); }
+
+async function doSearch() {
+  const q = $('q').value.trim();
+  if (!q) return;
+  const {results} = await api('/api/search', {method:'POST', body: JSON.stringify({query:q})});
+  $('results').innerHTML = results.length
+    ? `<h2>${results.length} result${results.length>1?'s':''}</h2>` + results.map(r => `
+      <div class="result">
+        ${r.kind==='image'
+          ? `<img class="thumb" src="/api/thumbnail?path=${encodeURIComponent(r.path)}" onerror="this.outerHTML='<div class=thumb>🖼️</div>'">`
+          : `<div class="thumb">${icon(r.kind)}</div>`}
+        <div class="r-body">
+          <div class="r-name">${r.name}</div>
+          <div class="r-path">${r.path}</div>
+          ${r.snippet ? `<div class="r-snip">${esc(r.snippet)}</div>` : ''}
+          <div class="r-meta"><span class="r-score">${(r.score*100).toFixed(0)}%</span>
+            · semantic ${r.match_semantic} · visual ${r.match_visual} · keyword ${r.match_keyword}
+            · ${fmtBytes(r.size_bytes)}</div>
+        </div>
+      </div>`).join('')
+    : '<p style="color:var(--dim);margin-top:20px">No results. Make sure folders are added and indexing has finished.</p>';
+}
+
+function icon(kind){ return {text:'📄', pdf:'📕', docx:'📘', image:'🖼️', other:'📁'}[kind] || '📁'; }
+function fmtBytes(n){ if(!n) return '0 B'; const u=['B','KB','MB','GB','TB']; let i=0; while(n>=1024&&i<4){n/=1024;i++;} return n.toFixed(1)+' '+u[i]; }
+function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+
+function openSettings(){ const s=$('settings'); s.style.display = s.style.display==='none'?'block':'none'; if(s.style.display==='block') loadHealth(); }
+
+async function loadHealth(){
+  const h = await api('/api/health');
+  const cards = `
+    <div class="card"><h3>Index</h3>
+      <div class="kv"><span>Files indexed</span><b>${h.summary.files}</b></div>
+      <div class="kv"><span>Text chunks</span><b>${h.summary.chunks}</b></div>
+      <div class="kv"><span>Images (OCR+vision)</span><b>${h.summary.images}</b></div>
+      <div class="kv"><span>Total size</span><b>${h.summary.total_human}</b></div></div>
+    <div class="card"><h3>By folder</h3>
+      ${h.per_folder.map(f=>`<div class="kv"><span>${f.folder}</span><b>${f.count} · ${f.bytes_human}</b></div>`).join('') || '<div class="pill">—</div>'}</div>
+    <div class="card"><h3>Largest files</h3>
+      ${h.largest.slice(0,5).map(f=>`<div class="kv"><span style="overflow-wrap:anywhere">${f.path.split(/[\\\\/]/).pop()}</span><b>${f.size_human}</b></div>`).join('') || '<div class="pill">—</div>'}</div>
+    <div class="card"><h3>Cleanup suggestions</h3>
+      ${h.suggestions.map(s=>`<div class="sugg"><b>${s.title} — up to ${s.potential_human}</b>${s.detail}</div>`).join('') || '<div class="pill">Nothing to clean. Nice. ✨</div>'}</div>`;
+  $('health').innerHTML = cards;
+}
+
+async function suggestFolders(){
+  const {suggestions} = await api('/api/suggest-folders');
+  $('suggests').innerHTML = '<span class="pill">Quick add: </span>' + suggestions.map(f =>
+    `<button class="btn secondary" onclick="addFolder('${f.replace(/\\/g,'\\\\')}')">${f.split(/[\\\\/]/).pop()}</button>`).join('');
+}
+
+async function addFolder(p){
+  const path = p || $('newFolder').value.trim();
+  if (!path) return;
+  await api('/api/folders', {method:'POST', body: JSON.stringify({path})});
+  $('newFolder').value=''; refreshStatus(); setTimeout(loadHealth, 1500);
+}
+async function removeFolder(p){ await api('/api/folders', {method:'DELETE', body: JSON.stringify({path:p})}); refreshStatus(); }
+async function rescan(){ await api('/api/index', {method:'POST'}); setTimeout(loadHealth, 2000); }
+
+async function wipe(){
+  if (!confirm('Permanently delete the entire Local Memory index (database, vectors, thumbnails)? This cannot be undone.')) return;
+  await api('/api/wipe', {method:'POST'});
+  $('results').innerHTML=''; refreshStatus(); loadHealth();
+}
+
+suggestFolders(); refreshStatus();
+</script>
+</body>
+</html>
