@@ -68,10 +68,133 @@ TROCR_TARGETS = [
     ("trocr/trocr-tokenizer.json", [TROCR_BASE + "tokenizer.json", "https://huggingface.co/Xenova/trocr-small-printed/resolve/main/tokenizer.json"]),
     ("trocr/generation_config.json", [TROCR_BASE + "generation_config.json", "https://huggingface.co/Xenova/trocr-small-printed/resolve/main/generation_config.json"]),
 ]
-QWEN_URL = "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/main/onnx/model.onnx"
-OPTIONAL = [
-    ("qwen3-0.6b.onnx", QWEN_URL),
-]
+# 06-02: the bare Qwen/Qwen3-0.6B ONNX export is NOT a GenAI bundle (no
+# genai_config.json) and cannot load via onnxruntime_genai.Model. The --qwen
+# branch below fetches the onnx-community discQuant GenAI bundle instead.
+QWEN_REPO = "onnx-community/Qwen3-0.6B-DQ-ONNX"
+QWEN_BUNDLE_DIR = "qwen3-0.6b"
+# Tokenizer/config files flattened next to the model; prefer the int4 model
+# variant (fallback q4f16) when present in the repo layout.
+QWEN_TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json")
+
+
+def _hf_list_repo_files(repo: str) -> list[str]:
+    """List files of a public HF repo via the API (no auth needed)."""
+    import json
+    import urllib.request
+    url = f"https://huggingface.co/api/models/{repo}"
+    with urllib.request.urlopen(url, timeout=60) as resp:
+        data = json.load(resp)
+    return [s["rfilename"] for s in data.get("siblings", [])]
+
+
+def _pick_qwen_model_files(files: list[str]) -> list[str]:
+    """Choose the int4 model files (plus genai_config.json / tokenizer) from
+    the repo listing. GenAI bundles keep genai_config.json next to the model
+    (usually under onnx/); we flatten everything into one bundle dir."""
+    cfg = [f for f in files if f.endswith("genai_config.json")]
+    tok = [f for f in files if f.rsplit("/", 1)[-1] in QWEN_TOKENIZER_FILES]
+    int4 = [f for f in files if "/model_int4" in f or f.startswith("model_int4")]
+    q4f16 = [f for f in files if "/model_q4f16" in f or f.startswith("model_q4f16")]
+    chosen = int4 or q4f16
+    # .onnx, .onnx.data and .onnx_data (HF external-data naming) all count —
+    # an ONNX without its external data file fails to load.
+    model_files = [f for f in chosen
+                   if f.endswith(".onnx") or f.endswith(".onnx.data") or f.endswith(".onnx_data")]
+    picked: list[str] = []
+    seen: set[str] = set()
+    for group in (cfg, tok, model_files):
+        for f in group:
+            base = f.rsplit("/", 1)[-1]
+            if base not in seen:
+                seen.add(base)
+                picked.append(f)
+    return picked
+
+
+def _sanitize_qwen_bundle(dest_dir: Path) -> None:
+    """Make the fetched bundle loadable by a CPU/QNN OGA build on this machine:
+    point decoder.filename at the downloaded .onnx and strip foreign EP options
+    (onnx-community configs ship webgpu provider_options that a CPU-only OGA
+    build rejects with 'WebGPU execution provider is not supported')."""
+    import json
+    cfg_path = dest_dir / "genai_config.json"
+    if not cfg_path.is_file():
+        return
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        decoder = cfg["model"]["decoder"]
+        onnx_name = next(
+            (f.name for f in dest_dir.glob("*.onnx") if not f.name.endswith(".data")),
+            None)
+        if onnx_name:
+            decoder["filename"] = onnx_name
+        decoder.setdefault("session_options", {})["provider_options"] = [{"cpu": {}}]
+        cfg_path.write_text(json.dumps(cfg, indent=4), encoding="utf-8")
+        print(f"[ok] genai_config.json sanitized (filename={decoder.get('filename')}, ep=cpu)")
+    except Exception as e:
+        print(f"[warn] could not sanitize genai_config.json: {e}")
+
+
+def run_qwen() -> int:
+    """Fetch the Qwen3-0.6B GenAI bundle into models/qwen3-0.6b/ and verify
+    genai_config.json landed. Idempotent: skips if the bundle already exists.
+    If the HF layout changed, prints the builder fallback command."""
+    import json
+    import urllib.request
+
+    dest_dir = MODELS_DIR / QWEN_BUNDLE_DIR
+    try:
+        files = _hf_list_repo_files(QWEN_REPO)
+    except Exception as e:
+        if (dest_dir / "genai_config.json").is_file():
+            print(f"[ok] {QWEN_BUNDLE_DIR}/ GenAI bundle already present — skipping (HF unreachable)")
+            return 0
+        print(f"[fail] cannot list HF repo {QWEN_REPO}: {e}")
+        print("  fallback: python -m onnxruntime_genai.models.builder -m Qwen/Qwen3-0.6B "
+              f"-o {dest_dir.as_posix()} -p int4 -e cpu")
+        return 1
+    picked = _pick_qwen_model_files(files)
+    if not any(f.endswith("genai_config.json") for f in picked) or not picked:
+        print(f"[fail] unexpected repo layout for {QWEN_REPO}: {files[:20]} ...")
+        print("  fallback: python -m onnxruntime_genai.models.builder -m Qwen/Qwen3-0.6B "
+              f"-o {dest_dir.as_posix()} -p int4 -e cpu")
+        return 1
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    ok = True
+    for rel in picked:
+        base = rel.rsplit("/", 1)[-1]
+        dest = dest_dir / base
+        if dest.exists() and dest.stat().st_size > 100:
+            print(f"[ok] {QWEN_BUNDLE_DIR}/{base} already present")
+            continue
+        url = f"https://huggingface.co/{QWEN_REPO}/resolve/main/{rel}"
+        print(f"[dl] {QWEN_BUNDLE_DIR}/{base} ...")
+        try:
+            _download(url, dest)
+            print(f"[ok] saved {dest} ({dest.stat().st_size // 1024 // 1024} MB)")
+        except Exception as e:
+            ok = False
+            print(f"[fail] {base}: {e}")
+    # Post-download verification: a bundle without genai_config.json is useless.
+    if not (dest_dir / "genai_config.json").is_file():
+        ok = False
+        print(f"[fail] {dest_dir / 'genai_config.json'} missing after download")
+    _sanitize_qwen_bundle(dest_dir)
+    # Clean up the old stray bare export if present (it never worked with OGA).
+    stray = MODELS_DIR / "qwen3-0.6b.onnx"
+    if stray.exists():
+        print(f"[note] removing stale bare export {stray.name} (not a GenAI bundle)")
+        try:
+            stray.unlink()
+        except OSError:
+            pass
+    if ok:
+        print(f"\nDone. GenAI bundle at {dest_dir} — restart Local Memory; the")
+        print("rewriter should report backend=qwen3-npu (see --doctor).")
+    else:
+        print("\nBundle incomplete — re-run `python scripts/setup_models.py --qwen` to retry.")
+    return 0 if ok else 1
 
 
 def _download(url: str, dest: Path, retries: int = 8) -> None:
@@ -233,7 +356,10 @@ def main() -> int:
     import argparse as _ap
     _p = _ap.ArgumentParser()
     _p.add_argument("--trocr", action="store_true", help="also fetch TrOCR OCR model (NPU)")
-    _p.add_argument("--qwen", action="store_true", help="also fetch Qwen3-0.6B rewriter (NPU)")
+    _p.add_argument("--qwen", action="store_true", help="fetch Qwen3-0.6B GenAI bundle "
+        "(onnx-community/Qwen3-0.6B-DQ-ONNX int4) into models/qwen3-0.6b/; if the HF "
+        "layout differs, build locally with: python -m onnxruntime_genai.models.builder "
+        "-m Qwen/Qwen3-0.6B -o models/qwen3-0.6b -p int4 -e cpu")
     _p.add_argument("--all", action="store_true", help="fetch base + optional models")
     _p.add_argument(
         "--npu",
@@ -268,7 +394,10 @@ def main() -> int:
     if "--trocr" in _sys.argv or "--all" in _sys.argv:
         targets.extend(TROCR_TARGETS)
     if "--qwen" in _sys.argv or "--all" in _sys.argv:
-        targets.extend(OPTIONAL)
+        # 06-02: fetch the GenAI bundle (directory) rather than a bare .onnx.
+        rc = run_qwen()
+        if rc != 0:
+            ok = False
     for name, urls in targets:
         if isinstance(urls, str):
             urls = [urls]

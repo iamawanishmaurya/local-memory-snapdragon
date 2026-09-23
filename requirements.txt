@@ -24,6 +24,13 @@ numpy>=1.26
 # until the DLL is vendored.
 sqlite-vec==0.1.9
 
+# Query rewriter LLM (PERF-02): Qwen3-0.6B via onnxruntime-genai. Loader is
+# win_arm64 cp312; regex fallback is active if absent (models/qwen3-0.6b/
+# GenAI bundle not installed). Resolved version triple on this device
+# (install OGA first, then align ORT/ORT-qnn to it — do not mix latest):
+#   onnxruntime-genai==0.16.0 · onnxruntime==1.30.0 · onnxruntime-qnn==2.6.0
+onnxruntime-genai==0.16.0
+
 # Text extraction (pymupdf: render-based OCR fallback for image-only PDFs)
 pypdf>=4.0
 pymupdf>=1.24
