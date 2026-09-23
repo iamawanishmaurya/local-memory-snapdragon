@@ -16,6 +16,7 @@ _KIND_DESCRIPTION = {
     "executable": "executable installer or application",
     "disk-image": "disk image",
     "data": "data file",
+    "media": "audio or video recording",
 }
 
 
@@ -168,6 +169,118 @@ def _read_docx(path: Path) -> str:
         return ""
 
 
+def _read_pptx(path: Path) -> str:
+    """Slide text in order (D-02): text frames + table cells + notes,
+    each slide prefixed 'Slide N:'. Capped; '' on any failure."""
+    try:
+        from pptx import Presentation
+        prs = Presentation(str(path))
+        parts: list[str] = []
+        for i, slide in enumerate(prs.slides, start=1):
+            if i > config.PPTX_MAX_SLIDES:
+                break
+            body: list[str] = []
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    text = shape.text.strip()
+                    if text:
+                        body.append(text)
+                if shape.has_table:
+                    for row in shape.table.rows:
+                        cells = [c.text.strip() for c in row.cells]
+                        row_text = " | ".join(c for c in cells if c)
+                        if row_text:
+                            body.append(row_text)
+            if getattr(slide, "has_notes_slide", False):
+                notes = slide.notes_slide.notes_text_frame.text.strip()
+                if notes:
+                    body.append(notes)
+            if body:
+                parts.append(f"Slide {i}: " + "\n".join(body))
+            if sum(len(x) for x in parts) > config.OFFICE_MAX_CHARS:
+                break
+        return "\n".join(parts)[: config.OFFICE_MAX_CHARS]
+    except Exception:
+        return ""
+
+
+def _read_xlsx(path: Path) -> str:
+    """Cell text per sheet (D-02): read_only streaming, capped by sheet/row/col.
+    '' on any failure."""
+    try:
+        from openpyxl import load_workbook
+        wb = load_workbook(str(path), read_only=True, data_only=True)
+        parts: list[str] = []
+        try:
+            for name in wb.sheetnames[: config.XLSX_MAX_SHEETS]:
+                ws = wb[name]
+                rows: list[str] = []
+                for i, row in enumerate(ws.iter_rows(values_only=True)):
+                    if i >= config.XLSX_MAX_ROWS:
+                        break
+                    cells = [
+                        str(v) for v in row[:50]
+                        if v is not None and str(v).strip()
+                    ]
+                    if cells:
+                        rows.append(" | ".join(cells))
+                if rows:
+                    parts.append(f"Sheet {name}: " + "\n".join(rows))
+                if sum(len(x) for x in parts) > config.OFFICE_MAX_CHARS:
+                    break
+        finally:
+            wb.close()
+        return "\n".join(parts)[: config.OFFICE_MAX_CHARS]
+    except Exception:
+        return ""
+
+
+def _read_media(path: Path) -> str | None:
+    """Tag text for a media file (D-03): 'Title by Artist — Album (date)
+    audio recording, M:SS'. None when mutagen is missing or no tags —
+    the caller falls back to plain name tokens. Never raises."""
+    try:
+        import mutagen
+        f = mutagen.File(str(path), easy=True)
+        if f is None or not f.tags:
+            return None
+
+        def tag(name: str) -> str:
+            vals = f.tags.get(name) or []
+            return str(vals[0]).strip() if vals else ""
+
+        title, artist = tag("title"), tag("artist")
+        album, date = tag("album"), tag("date")
+        if not (title or artist or album):
+            return None
+        ext = path.suffix.lower()
+        if ext == ".mp4":
+            kind_word = "MP4 video"
+        elif ext in (".mkv", ".mov", ".avi", ".webm"):
+            kind_word = "video recording"
+        else:
+            kind_word = "audio recording"
+        length = getattr(f.info, "length", None)
+        dur = ""
+        if length and length > 0:
+            secs = int(round(length))
+            h, rem = divmod(secs, 3600)
+            m, s = divmod(rem, 60)
+            dur = f", {h}:{m:02d}:{s:02d}" if h else f", {m}:{s:02d}"
+        pieces = []
+        head = " by ".join(x for x in (title, artist) if x)
+        if head:
+            pieces.append(head)
+        if album:
+            tail = f"Album {album}" + (f" ({date})" if date else "")
+            pieces.append("— " + tail)
+        pieces.append(kind_word)
+        text = " ".join(pieces) + dur
+        return text.strip()
+    except Exception:
+        return None
+
+
 def extract_text(path: Path) -> tuple[str, str]:
     """Return (text, kind). Empty text means nothing usable extracted."""
     ext = path.suffix.lower()
@@ -177,6 +290,10 @@ def extract_text(path: Path) -> tuple[str, str]:
         return _read_pdf(path), "pdf"
     if ext in config.DOCX_EXTS:
         return _read_docx(path), "docx"
+    if ext in config.PPTX_EXTS:
+        return _read_pptx(path), "slides"
+    if ext in config.XLSX_EXTS:
+        return _read_xlsx(path), "spreadsheet"
     if ext in config.IPYNB_EXTS:
         return _read_ipynb(path), "notebook"
     return "", "other"
@@ -255,6 +372,10 @@ def metadata_chunks(path: Path) -> tuple[str, list[str]]:
             natural += ". Contents: " + " ".join(
                 e.rsplit("/", 1)[-1].replace("-", " ").replace("_", " ")
                 for e in entries)
+        if kind == "media":
+            media_text = _read_media(path)
+            if media_text:
+                natural += ". " + media_text
         chunks.append(natural)
     return kind, chunks
 
