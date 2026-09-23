@@ -1,0 +1,53 @@
+# CI for local-memory-snapdragon
+# Model-free only: no models/, no NPU device, no Qualcomm AI Hub token required.
+#
+# NOTE (future, deferred per 05-CONTEXT): a windows-11-arm hosted runner job
+# (free for public repos) could be added later to prove ARM64 wheel installs
+# and run true-NPU tests on a Snapdragon runner. Do not add it now.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  tests:
+    name: pytest (model-free suite)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run model-free pytest suite
+        run: python -m pytest tests/ -q
+
+  ui:
+    name: UI build (ui/dist gate)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI dependencies
+        run: npm ci
+
+      - name: Build UI
+        run: npm run build
