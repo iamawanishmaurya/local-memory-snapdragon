@@ -24,6 +24,10 @@ _npu_checked_at: float = 0.0
 _latencies: list[float] = []
 LATENCY_WINDOW = 100
 
+# Per-backend rewrite latency (06-02): {"regex": [ms...], "qwen3-npu": [ms...]}
+_rewrite_latencies: dict[str, list[float]] = {}
+REWRITE_WINDOW = 100
+
 
 def check_npu_live() -> dict:
     """Negotiated provider for the nomic model via a real session (cached 60s)."""
@@ -112,6 +116,44 @@ def latency_stats() -> dict:
 
 def reset_latency() -> None:
     _latencies.clear()
+
+
+def append_rewrite_latency(backend: str, ms: float) -> None:
+    """Record one rewrite() call's wall time under its backend bucket
+    (regex | qwen3-npu). Never raises — measurement must not break search."""
+    try:
+        bucket = _rewrite_latencies.setdefault(backend, [])
+        bucket.append(float(ms))
+        if len(bucket) > REWRITE_WINDOW:
+            del bucket[: len(bucket) - REWRITE_WINDOW]
+    except Exception:
+        pass
+
+
+def rewrite_latency_stats() -> dict:
+    """p50/p95 per rewrite backend, same shape as latency_stats()."""
+    out: dict = {}
+    try:
+        for backend, bucket in _rewrite_latencies.items():
+            if not bucket:
+                continue
+            if len(bucket) == 1:
+                v = round(bucket[0], 1)
+                out[backend] = {"count": 1, "p50_ms": v, "p95_ms": v}
+                continue
+            qs = statistics.quantiles(bucket, n=20)
+            out[backend] = {
+                "count": len(bucket),
+                "p50_ms": round(qs[9], 1),
+                "p95_ms": round(qs[18], 1),
+            }
+    except Exception:
+        pass
+    return out
+
+
+def reset_rewrite_latency() -> None:
+    _rewrite_latencies.clear()
 
 
 def throughput() -> dict:

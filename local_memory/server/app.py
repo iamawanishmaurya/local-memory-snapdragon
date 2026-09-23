@@ -443,6 +443,7 @@ def api_perf():
         "npu": _perf.check_npu_live(),
         "cold_start_s": _perf.record_cold_start(),
         "latency": _perf.latency_stats(),
+        "rewrite_latency": _perf.rewrite_latency_stats(),
         "throughput": _perf.throughput(),
     }
     try:

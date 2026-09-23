@@ -74,17 +74,29 @@ def doctor() -> None:
     print(f"  CPU workers    : {workers}  (Oryon pool, LOCAL_MEMORY_WORKERS overrides)")
     for name in ("nomic-embed-text.onnx", "clip-vit-b32-image.onnx", "clip-vit-b32-text.onnx",
                  "nomic-embed-text.serialized", "clip-vit-b32-image.serialized",
-                 "trocr/encoder_model.onnx", "trocr/decoder_model_merged.onnx", "qwen3-0.6b.onnx"):
+                 "trocr/encoder_model.onnx", "trocr/decoder_model_merged.onnx"):
         path = config.MODELS_DIR / name
         tag = "OK" if path.exists() else ("missing — run scripts/setup_models.py" if name.endswith(".onnx") else "optional")
         print(f"  model {name:28s}: {tag}")
+    # Qwen3 GenAI bundle (06-02): directory with genai_config.json, not a bare .onnx.
+    _qwen_ok = (config.MODELS_DIR / "qwen3-0.6b" / "genai_config.json").is_file()
+    print(f"  model {'qwen3-0.6b/ (bundle)':28s}: "
+          f"{'OK' if _qwen_ok else 'missing — run scripts/setup_models.py --qwen'}")
     print(f"  OCR backend    : {ocr.active_backend()}")
     hint = ocr.ocr_hint()
     if hint:
         print(f"  OCR setup      : {hint}")
     try:
-        from .search.query_rewrite import rewrite as _rw
-        print(f"  query rewrite  : {_rw('invoice from last month')['backend']}")
+        from .search.query_rewrite import rewrite as _rw, rewriter_status as _rws
+        _probe = _rw("invoice from last month")  # triggers the (cached) load
+        st = _rws()
+        model_part = st["model"] if st["model"] else "no bundle (regex fallback)"
+        print(
+            f"  rewriter       : backend={st['backend']} | model={model_part} | "
+            f"genai importable={'yes' if st['genai_importable'] else 'no'}"
+            + (f" | reason={st['reason']}" if st["backend"] == "regex" and st.get("reason", "not tried") != "not tried" else "")
+        )
+        print(f"  query rewrite  : {_probe['backend']}")
     except Exception:
         pass
     try:
