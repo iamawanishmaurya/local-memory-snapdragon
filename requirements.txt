@@ -23,6 +23,13 @@ pypdf>=4.0
 pymupdf>=1.24
 python-docx>=1.1
 
+# Office extraction (D-02): PPTX slide text + XLSX cell text
+python-pptx==1.0.2
+openpyxl==3.1.5
+
+# Media metadata indexing (D-03): tags + duration, pure Python
+mutagen==1.47.0
+
 # Image handling (CLIP preprocessing, thumbnails)
 pillow>=10.2
 
