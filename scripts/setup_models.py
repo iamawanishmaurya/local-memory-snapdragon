@@ -113,6 +113,117 @@ def _download(url: str, dest: Path, retries: int = 8) -> None:
             time.sleep(min(30, 2 ** attempt))
 
 
+# ---------------------------------------------------------------------------
+# NPU mode (--npu): AI Hub compile of ONNX -> QNN context binaries (.serialized)
+# ---------------------------------------------------------------------------
+# The runtime (local_memory/embeddings/base.py::context_binary_for) auto-detects
+# a sibling <stem>.serialized next to each .onnx — no runtime changes needed.
+# TrOCR decoder stays on CPU in v1 (autoregressive + past-KV = hardest to
+# compile; the encoder is the small share anyway) — see 05-CONTEXT.md D-01.
+NPU_TARGETS = [
+    "nomic-embed-text.onnx",
+    "clip-vit-b32-image.onnx",
+    "clip-vit-b32-text.onnx",
+]
+NPU_COMPILE_OPTIONS = "--target_runtime qnn_context_binary --quantize_io --quantize_fulltype int8"
+NPU_DEFAULT_DEVICE = "Snapdragon X Elite CRD"
+TOKEN_HELP = (
+    "Qualcomm AI Hub API token not set. Create a free account at "
+    "https://aihub.qualcomm.com, get a token from Settings, then:\n"
+    "  set QAI_HUB_API_TOKEN=<token>"
+)
+
+
+def _npu_device(hub, name: str):
+    """Match a device name against hub.get_devices(); None if not found."""
+    for d in hub.get_devices():
+        if d.name == name:
+            return d
+    return None
+
+
+def run_npu() -> int:
+    """Submit AI Hub compile jobs for the three NPU ONNX models and download
+    sibling .serialized context binaries. Idempotent: skips models whose
+    .serialized already exists. Returns 1 on any failure (jobs are
+    resubmittable — just re-run)."""
+    token = os.environ.get("QAI_HUB_API_TOKEN")
+    if not token:
+        print(TOKEN_HELP)
+        return 1
+
+    try:
+        import qai_hub as hub  # type: ignore
+    except ImportError:
+        print("qai-hub is not installed. Run: pip install qai-hub")
+        return 1
+    try:
+        hub.configure(api_token=token)
+    except Exception as e:  # pragma: no cover - network/HTTP error path
+        print(f"AI Hub configure failed: {e}")
+        return 1
+
+    device_name = os.environ.get("LOCAL_MEMORY_HUB_DEVICE", NPU_DEFAULT_DEVICE)
+    device = _npu_device(hub, device_name)
+    if device is None:
+        try:
+            known = [d.name for d in hub.get_devices()]
+        except Exception:
+            known = []
+        print(f"Device {device_name!r} not found on AI Hub.")
+        if known:
+            print("Closest available devices:")
+            for n in known[:20]:
+                print(f"  - {n}")
+            print("Re-run with: set LOCAL_MEMORY_HUB_DEVICE=<exact name>")
+        return 1
+
+    MODELS_DIR.mkdir(exist_ok=True)
+    failures: list[str] = []
+    skipped = 0
+    for stem in NPU_TARGETS:
+        onnx_path = MODELS_DIR / stem
+        out_path = onnx_path.with_suffix(".serialized")
+        if out_path.exists() and out_path.stat().st_size > 100_000:
+            print(f"[ok] {out_path.name} already present — skipping")
+            skipped += 1
+            continue
+        if not onnx_path.exists() or onnx_path.stat().st_size <= 100_000:
+            failures.append(stem)
+            print(f"[fail] {onnx_path.name} missing — run `python scripts/setup_models.py` first")
+            continue
+        print(f"[npu] compiling {stem} -> {out_path.name} on {device.name} ...")
+        try:
+            model = hub.upload_model(str(onnx_path))
+            job = hub.submit_compile_job(
+                model=model,
+                device=device,
+                options=NPU_COMPILE_OPTIONS,
+            )
+            print(f"  job: {getattr(job, 'url', job)}  (watch queue status in the browser)")
+            target = job.get_target_model()  # blocks until compile finishes
+            target.download(str(out_path))
+            print(f"[ok] saved {out_path} ({out_path.stat().st_size // 1024 // 1024} MB)")
+        except Exception as e:
+            failures.append(stem)
+            print(f"[fail] {stem}: {e}")
+            if stem.startswith("nomic") and "shape" in str(e).lower():
+                print("  hint: Nomic's HF ONNX export has dynamic seq len — fix the")
+                print("  input specs to static max_len 256 and re-export, then retry.")
+            print("  jobs are resubmittable: fix/re-run `python scripts/setup_models.py --npu`")
+
+    if failures:
+        print(f"\n{len(failures)} model(s) failed: {', '.join(failures)}")
+        print("Re-run `python scripts/setup_models.py --npu` to retry (already-downloaded .serialized files are skipped).")
+        return 1
+    if skipped == len(NPU_TARGETS):
+        print("\nAll NPU context binaries already present — nothing to do.")
+    else:
+        print("\nDone. Restart Local Memory; the Statistics badge should flip to")
+        print("QNN active (check_npu_live() -> QNNExecutionProvider / npu_live: true).")
+    return 0
+
+
 def main() -> int:
     import sys as _sys
     try:
@@ -124,9 +235,17 @@ def main() -> int:
     _p.add_argument("--trocr", action="store_true", help="also fetch TrOCR OCR model (NPU)")
     _p.add_argument("--qwen", action="store_true", help="also fetch Qwen3-0.6B rewriter (NPU)")
     _p.add_argument("--all", action="store_true", help="fetch base + optional models")
+    _p.add_argument(
+        "--npu",
+        action="store_true",
+        help="compile ONNX models to QNN context binaries via Qualcomm AI Hub "
+        "(requires QAI_HUB_API_TOKEN; TrOCR decoder stays on CPU in v1)",
+    )
     _a, _ = _p.parse_known_args()
     MODELS_DIR.mkdir(exist_ok=True)
 
+    if _a.npu:
+        return run_npu()
     token = os.environ.get("QAI_HUB_API_TOKEN")
     if token:
         print("Qualcomm AI Hub token found — trying qai-hub export first…")
