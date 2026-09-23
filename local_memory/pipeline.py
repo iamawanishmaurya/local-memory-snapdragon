@@ -104,7 +104,8 @@ def _extract_one(path: Path):
                 "size": stat.st_size, "mtime": stat.st_mtime, "meta_kind": kind}
     return {"kind": "text", "path": path, "folder": folder, "ext": ext,
             "size": stat.st_size, "mtime": stat.st_mtime,
-            "meta_kind": kind, "chunks": text_extractor.chunk_words(text)}
+            "meta_kind": kind, "chunks": text_extractor.chunk_words(text),
+            "ocr_used": text_extractor.ocr_was_used(path)}
 
 
 def _commit_job(job, t_emb, i_emb) -> bool:
@@ -117,7 +118,8 @@ def _commit_job(job, t_emb, i_emb) -> bool:
         return False
     if job["kind"] == "text":
         file_id = database.upsert_file(str(job["path"]), job["folder"], job["ext"],
-                                       job["size"], job["mtime"], job["meta_kind"])
+                                       job["size"], job["mtime"], job["meta_kind"],
+                                       ocr_used=job.get("ocr_used", False))
         database.replace_chunks(file_id, list(enumerate(job["chunks"])))
         vecs = t_emb.encode_batch(job["chunks"])
         vector_store.upsert_many([(file_id, i, "text", v) for i, v in enumerate(vecs)])
@@ -175,7 +177,8 @@ def index_file(path: str) -> bool:
         return False
 
     chunks = text_extractor.chunk_words(text)
-    file_id = database.upsert_file(str(p), folder, ext, stat.st_size, stat.st_mtime, kind)
+    file_id = database.upsert_file(str(p), folder, ext, stat.st_size, stat.st_mtime, kind,
+                                   ocr_used=text_extractor.ocr_was_used(p))
     database.replace_chunks(file_id, list(enumerate(chunks)))
 
     _ensure_embedders()

@@ -60,10 +60,21 @@ def _read_pdf(path: Path) -> str:
                     ocr_text = _ocr_pdf_page_render(path, i)
                 if _has_real_text(ocr_text):
                     text = ocr_text
+                    _pdf_ocr_used[str(path)] = True
             parts.append(text)
         return "\n".join(parts)
     except Exception:
         return ""
+
+
+# OCR provenance (DEMO-05 stats): per-path record of PDFs whose text came
+# from the render/embedded-image OCR fallback. Keyed by path so parallel
+# extraction workers never cross-contaminate.
+_pdf_ocr_used: dict[str, bool] = {}
+
+
+def ocr_was_used(path: str | Path) -> bool:
+    return bool(_pdf_ocr_used.get(str(path)))
 
 
 def _ocr_pdf_page(page) -> str:

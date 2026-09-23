@@ -105,9 +105,17 @@ def index_stats() -> dict:
         out["images_understood"] = conn.execute(
             "SELECT COUNT(*) c FROM files WHERE kind='image'"
         ).fetchone()["c"]
-        out["ocr_files"] = conn.execute(
-            "SELECT COUNT(*) c FROM files WHERE ocr_text IS NOT NULL AND ocr_text != ''"
-        ).fetchone()["c"]
+        try:
+            out["ocr_files"] = conn.execute(
+                """SELECT COUNT(*) c FROM files
+                   WHERE (ocr_text IS NOT NULL AND ocr_text != '')
+                      OR (ocr_used IS NOT NULL AND ocr_used = 1)"""
+            ).fetchone()["c"]
+        except Exception:
+            # Pre-migration DB (no ocr_used column) — count images only.
+            out["ocr_files"] = conn.execute(
+                "SELECT COUNT(*) c FROM files WHERE ocr_text IS NOT NULL AND ocr_text != ''"
+            ).fetchone()["c"]
         page_size = conn.execute("PRAGMA page_size").fetchone()[0]
         page_count = conn.execute("PRAGMA page_count").fetchone()[0]
         out["db_page_size"] = int(page_size)

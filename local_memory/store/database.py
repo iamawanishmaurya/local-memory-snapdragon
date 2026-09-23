@@ -106,6 +106,12 @@ END;
 def init_db() -> None:
     with _lock:
         _conn().executescript(SCHEMA)
+        # Phase 4 migration: OCR provenance for PDFs whose text came from the
+        # render/embedded-image fallback (stats "Files with OCR text").
+        cols = {r[1] for r in _conn().execute("PRAGMA table_info(files)")}
+        if "ocr_used" not in cols:
+            _conn().execute("ALTER TABLE files ADD COLUMN ocr_used INTEGER DEFAULT 0")
+            _conn().commit()
 
 
 def close() -> None:
@@ -121,17 +127,18 @@ def close() -> None:
             _shared_path = ""
 
 
-def upsert_file(path: str, folder: str, ext: str, size: int, mtime: float, kind: str, ocr_text: str = "") -> int:
+def upsert_file(path: str, folder: str, ext: str, size: int, mtime: float, kind: str, ocr_text: str = "", ocr_used: bool = False) -> int:
     now = time.time()
     with _lock:
         conn = _conn()
         conn.execute(
-            """INSERT INTO files (path, folder, ext, size_bytes, mtime, indexed_at, kind, ocr_text)
-               VALUES (?,?,?,?,?,?,?,?)
+            """INSERT INTO files (path, folder, ext, size_bytes, mtime, indexed_at, kind, ocr_text, ocr_used)
+               VALUES (?,?,?,?,?,?,?,?,?)
                ON CONFLICT(path) DO UPDATE SET
                  size_bytes=excluded.size_bytes, mtime=excluded.mtime,
-                 indexed_at=excluded.indexed_at, kind=excluded.kind, ocr_text=excluded.ocr_text""",
-            (path, folder, ext, size, mtime, now, kind, ocr_text),
+                 indexed_at=excluded.indexed_at, kind=excluded.kind, ocr_text=excluded.ocr_text,
+                 ocr_used=excluded.ocr_used""",
+            (path, folder, ext, size, mtime, now, kind, ocr_text, int(ocr_used)),
         )
         conn.commit()
         row = conn.execute("SELECT id FROM files WHERE path=?", (path,)).fetchone()
