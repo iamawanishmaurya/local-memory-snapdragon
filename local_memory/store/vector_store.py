@@ -143,6 +143,8 @@ def upsert(file_id: int, ordinal: int, space: str, vec: np.ndarray) -> None:
         (file_id, ordinal, space, blob, scale),
     )
     invalidate_cache(space)
+    from . import vec_ann
+    vec_ann.invalidate(space)
 
 
 def upsert_many(rows: list[tuple[int, int, str, np.ndarray]]) -> None:
@@ -153,6 +155,8 @@ def upsert_many(rows: list[tuple[int, int, str, np.ndarray]]) -> None:
         [(f, o, s, *_encode_blob(v)) for f, o, s, v in rows],
         many=True,
     )
+    from . import vec_ann
+    vec_ann.invalidate(None)
     for _, _, s, _ in rows:
         invalidate_cache(s)
 
@@ -165,13 +169,6 @@ def load_all(space: str, use_cache: bool = True) -> tuple[np.ndarray, list[tuple
         if hit is not None:
             mat, keys = hit
             return mat.copy(), list(keys)
-    # sqlite-vec ANN fast path when installed (exact same results at small n).
-    try:
-        import sqlite_vec  # type: ignore
-        if sqlite_vec is not None and not _QUANT:
-            pass  # placeholder: ANN index built lazily in search()
-    except Exception:
-        pass
     conn = _connect()
     try:
         rows = conn.execute("SELECT file_id, ordinal, vec, scale FROM vectors WHERE space=?", (space,)).fetchall()
@@ -203,7 +200,15 @@ def load_all(space: str, use_cache: bool = True) -> tuple[np.ndarray, list[tuple
 
 
 def search(space: str, query_vec: np.ndarray, top_k: int = 24) -> list[dict]:
-    """Cosine-similarity search. Returns [{file_id, ordinal, score}] desc."""
+    """Cosine-similarity search. Returns [{file_id, ordinal, score}] desc.
+
+    Fast path: sqlite-vec vec0 KNN (exact, C-speed) via vec_ann; falls back
+    to the brute-force numpy scan when the extension is unavailable.
+    """
+    from . import vec_ann
+    ann = vec_ann.search(space, query_vec, top_k)
+    if ann is not None:
+        return ann
     mat, keys = load_all(space)
     if mat.shape[0] == 0:
         return []
@@ -222,11 +227,15 @@ def search(space: str, query_vec: np.ndarray, top_k: int = 24) -> list[dict]:
 def wipe() -> None:
     _write("DELETE FROM vectors", ())
     invalidate_cache()
+    from . import vec_ann
+    vec_ann.invalidate(None)
 
 
 def delete(file_id: int) -> None:
     _write("DELETE FROM vectors WHERE file_id=?", (file_id,))
     invalidate_cache()
+    from . import vec_ann
+    vec_ann.invalidate(None)
 
 
 def delete_orphans() -> int:
@@ -241,6 +250,8 @@ def delete_orphans() -> int:
             conn.commit()
             if cur.rowcount:
                 invalidate_cache()
+                from . import vec_ann
+                vec_ann.invalidate(None)
             return cur.rowcount or 0
         except sqlite3.OperationalError as e:
             last = e
@@ -259,4 +270,12 @@ def stats() -> dict:
         nbytes = conn.execute("SELECT COALESCE(SUM(LENGTH(vec)),0) s FROM vectors").fetchone()[0]
     finally:
         conn.close()
-    return {"vectors": n, "bytes": nbytes, "quantized": _QUANT, "cached_spaces": sorted(_cache.keys())}
+    return {"vectors": n, "bytes": nbytes, "quantized": _QUANT, "cached_spaces": sorted(_cache.keys()), "ann": _ann_status()}
+
+
+def _ann_status() -> dict:
+    try:
+        from . import vec_ann
+        return vec_ann.status()
+    except Exception as e:  # pragma: no cover — guarded import
+        return {"available": False, "source": "none", "error": str(e)}

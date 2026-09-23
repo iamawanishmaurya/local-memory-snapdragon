@@ -18,6 +18,12 @@ onnxruntime-qnn>=1.17 ; platform_machine == 'aarch64' or platform_machine == 'AR
 # Numpy for vector math / brute-force fallback search
 numpy>=1.26
 
+# sqlite-vec ANN fast path (PERF-01): loader shim only on win-arm64 — there is
+# no win_arm64 wheel for 0.1.9, the vec0.dll is built by scripts/build_vec0.ps1
+# and loaded from local_memory/store/bin/. Brute-force numpy stays the default
+# until the DLL is vendored.
+sqlite-vec==0.1.9
+
 # Text extraction (pymupdf: render-based OCR fallback for image-only PDFs)
 pypdf>=4.0
 pymupdf>=1.24

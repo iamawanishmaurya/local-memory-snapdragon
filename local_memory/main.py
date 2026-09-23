@@ -93,6 +93,19 @@ def doctor() -> None:
     except Exception:
         pass
     try:
+        from .store import vec_ann as _va
+        st = _va.status()
+        if st["available"]:
+            print(
+                f"  sqlite-vec     : available ({st['source']}) | "
+                f"vec_text={st['vec_text_rows']}, vec_image={st['vec_image_rows']}"
+            )
+        else:
+            err = st.get("error") or "no win_arm64 wheel / dll"
+            print(f"  sqlite-vec     : not available ({err}) — brute-force fallback active")
+    except Exception:
+        print("  sqlite-vec     : not available — brute-force fallback active")
+    try:
         from .store import database as _db
         _fts = _db.fts_status()
         if not _fts.get("available"):
