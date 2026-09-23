@@ -278,7 +278,8 @@ def scan_folder(folder: str, recursive: bool = True, workers: int | None = None,
                 v = vec_map[cursor: cursor + n]
                 cursor += n
                 fid = database.upsert_file(str(j["path"]), j["folder"], j["ext"],
-                                           j["size"], j["mtime"], j["meta_kind"])
+                                           j["size"], j["mtime"], j["meta_kind"],
+                                           ocr_used=j.get("ocr_used", False))
                 database.replace_chunks(fid, list(enumerate(j["chunks"])))
                 vector_store.upsert_many([(fid, i, "text", vv) for i, vv in enumerate(v)])
                 count += 1
