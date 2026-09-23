@@ -36,3 +36,4 @@ tests/.tmpdata-*/
 .planning/eval-*
 .planning/debug_*
 .planning/*.ps1
+demo-frames/  
