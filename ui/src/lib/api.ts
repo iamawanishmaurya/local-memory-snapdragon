@@ -57,13 +57,27 @@ export interface StatsReport {
   }
 }
 
+export interface SuggestionFile {
+  path: string
+  size_bytes: number
+  size_human: string
+  reason: string
+}
+
 export interface HealthReport {
   summary: { files: number; chunks: number; images: number; total_bytes: number; total_human: string }
   per_folder: { folder: string; count: number; bytes: number; bytes_human: string; kinds: Record<string, number> }[]
   largest: { path: string; size_bytes: number; size_human: string; kind: string; mtime: number }[]
   stale_count: number
   dupe_groups: number
-  suggestions: { title: string; detail: string; potential_bytes: number; potential_human: string }[]
+  cleanup_folder?: string
+  suggestions: {
+    title: string
+    detail: string
+    potential_bytes: number
+    potential_human: string
+    files?: SuggestionFile[]
+  }[]
 }
 
 /** Auth token injected by the server into served index.html (see app.py::_serve_index). */
@@ -157,6 +171,17 @@ export const api = {
     req<{ opened: boolean }>('/api/open', {
       method: 'POST',
       body: JSON.stringify({ file_id: fileId }),
+    }),
+  cleanupMove: (path: string) =>
+    req<{ moved: boolean; dest: string }>('/api/cleanup/move', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+  cleanupConfig: () => req<{ cleanup_folder: string }>('/api/cleanup/config'),
+  setCleanupConfig: (cleanup_folder: string) =>
+    req<{ cleanup_folder: string }>('/api/cleanup/config', {
+      method: 'PUT',
+      body: JSON.stringify({ cleanup_folder }),
     }),
 }
 

@@ -222,3 +222,22 @@ def remove_watched_folder(path: str) -> list[str]:
     settings["watched_folders"] = [f for f in settings.get("watched_folders", []) if f != p]
     save_settings(settings)
     return settings["watched_folders"]
+
+
+def cleanup_folder() -> str:
+    """Reversible-move target for Storage Health cleanup (D-03)."""
+    settings = load_settings()
+    p = settings.get("cleanup_folder")
+    if p:
+        return str(Path(p).expanduser())
+    return str(user_profile_dir("Documents") / "LocalMemoryCleanup")
+
+
+def set_cleanup_folder(path: str) -> str:
+    """Persist the cleanup folder choice; create the directory on set."""
+    resolved = str(Path(path).expanduser().resolve())
+    Path(resolved).mkdir(parents=True, exist_ok=True)
+    settings = load_settings()
+    settings["cleanup_folder"] = resolved
+    save_settings(settings)
+    return resolved

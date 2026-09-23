@@ -281,6 +281,72 @@ def api_health():
     return storage_health.health_report()
 
 
+class MoveIn(BaseModel):
+    path: str
+
+
+class CleanupFolderIn(BaseModel):
+    cleanup_folder: str
+
+
+def _watched_root(path: Path) -> str | None:
+    """The watched folder containing `path`, or None (roots are exact prefixes)."""
+    resolved = str(path.resolve())
+    for root in config.watched_folders():
+        root_resolved = str(Path(root).resolve())
+        if resolved == root_resolved or resolved.startswith(root_resolved.rstrip("\\/") + "\\"):
+            return root
+    return None
+
+
+@app.post("/api/cleanup/move")
+def api_cleanup_move(body: MoveIn):
+    """Move ONE indexed file into the cleanup folder (D-03: reversible, never
+    deletes). Mirrors the /api/thumbnail index-only rule: the path must be
+    inside a watched folder AND present in the files table, so arbitrary local
+    paths can never be moved. The index row disappears via the existing
+    deletion propagation (watcher moved-event purge + startup reconcile).
+    """
+    import shutil
+
+    from ..store import database
+    src = Path(body.path)
+    row = database.get_file(str(src))
+    if row is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if _watched_root(src) is None:
+        return JSONResponse({"error": "outside watched folders"}, status_code=400)
+    if not src.is_file():
+        return JSONResponse({"error": "file no longer on disk"}, status_code=410)
+    dest_dir = Path(config.cleanup_folder())
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / src.name
+    stem, suffix = src.stem, src.suffix
+    n = 1
+    while dest.exists():
+        dest = dest_dir / f"{stem} ({n}){suffix}"
+        n += 1
+    try:
+        shutil.move(str(src), str(dest))
+    except OSError as exc:
+        return JSONResponse({"error": f"move failed ({type(exc).__name__})"}, status_code=500)
+    return {"moved": True, "dest": str(dest)}
+
+
+@app.get("/api/cleanup/config")
+def api_cleanup_config():
+    return {"cleanup_folder": config.cleanup_folder()}
+
+
+@app.put("/api/cleanup/config")
+def api_cleanup_set_config(body: CleanupFolderIn):
+    try:
+        saved = config.set_cleanup_folder(body.cleanup_folder)
+    except OSError as exc:
+        return JSONResponse({"error": f"could not create folder ({type(exc).__name__})"}, status_code=400)
+    return {"cleanup_folder": saved}
+
+
 @app.get("/api/thumbnail")
 def api_thumbnail(file_id: int):
     """Serve the cached thumbnail for an INDEXED image (D-04: index-lookup only).
