@@ -222,7 +222,153 @@ def _get_reader():
     return _reader
 
 
+# Images larger than this (either dimension) are routed through the banded
+# path: TrOCR squeezes its input to 384x384, so a whole wide/tall screenshot
+# becomes unreadable, while individual text-line bands survive at near-native
+# resolution.
+_BAND_THRESHOLD_PX = 800
+# Hard cap on text-line bands per image: denser pages get bands merged into
+# at most this many contiguous groups so OCR stays bounded.
+_MAX_BANDS = 24
+# Target max width (px) of the strip handed to one ocr_pil call. A band whose
+# ink spans wider than this (wide tables, full-width screenshot rows) is split
+# into vertical chunks — otherwise its glyphs compress ~4x horizontally when
+# the encoder resizes to 384px and decode turns to hallucination.
+_BAND_CHUNK_PX = 800
+# Brightness delta from the image median that marks a pixel as ink (works for
+# dark text on paper and light text on dark-mode screenshots alike).
+_INK_DELTA = 60
+
+
+def _text_line_bands(gray: "np.ndarray") -> list[tuple[int, int]]:
+    """Horizontal text-line bands as (y0, y1) row ranges of a grayscale image.
+
+    Ink pixels are those differing from the image's median brightness (so
+    dark-mode screenshots work as well as white paper), and bands are runs of
+    rows containing enough ink (>= 6 pixels), each at least 10 rows tall —
+    enough to isolate individual text lines so line-level OCR models see them
+    near their native size.
+    """
+    work = gray.astype(np.int16)
+    work = np.abs(work - int(np.median(work)))
+    ink_rows = (work > _INK_DELTA).sum(axis=1)
+    bands: list[tuple[int, int]] = []
+    start = None
+    for y, count in enumerate(ink_rows):
+        if count > 5 and start is None:
+            start = y
+        elif count <= 5 and start is not None:
+            if y - start >= 10:
+                bands.append((start, y))
+            start = None
+    if start is not None and len(ink_rows) - start >= 10:
+        bands.append((start, len(ink_rows)))
+    return bands
+
+
+def _trim_to_ink(img, median: float):
+    """Crop an image to its ink bounding box (plus a 6px pad); None when the
+    image holds too little ink (< 30 px) to be worth an OCR call.
+
+    Tight trimming matters: ocr_pil resizes whatever it gets to 384x384, so
+    blank margins around a short text run shrink its glyphs into noise.
+    """
+    try:
+        g = np.asarray(img.convert("L")).astype(np.int16)
+        mask = np.abs(g - int(median)) > _INK_DELTA
+        if int(mask.sum()) < 30:
+            return None
+        ys, xs = np.where(mask)
+        pad = 6
+        return img.crop((max(0, int(xs.min()) - pad),
+                         max(0, int(ys.min()) - pad),
+                         min(img.width, int(xs.max()) + 1 + pad),
+                         min(img.height, int(ys.max()) + 1 + pad)))
+    except Exception:
+        return img
+
+
+def ocr_image_banded(img) -> str:
+    """OCR an in-memory PIL image by splitting it into horizontal text-line
+    bands and running `ocr_pil` on each band.
+
+    Line-level OCR backends (TrOCR) resize their whole input to 384x384, so a
+    full page or screenshot squeezed in one shot yields garbage. Three steps
+    keep each call near-native:
+
+    1. split into horizontal text-line bands (dark-pixel row runs), merged to
+       at most _MAX_BANDS on dense pages;
+    2. invert dark-mode screenshots (models are trained on dark text on a
+       light background) and trim each band to its ink bounding box;
+    3. split still-wide bands (> _BAND_CHUNK_PX of ink) into vertical chunks.
+
+    An image with no detectable bands (blank / photo) falls back to a single
+    whole-image ocr_pil call. Returns '' on any failure — callers treat '' as
+    "no text", never an error.
+    """
+    try:
+        gray = np.asarray(img.convert("L"))
+        bands = _text_line_bands(gray)
+        if not bands:
+            return ocr_pil(img)
+        median = float(np.median(gray))
+        # Line-level OCR models are trained on dark-text-on-light scans; a
+        # dark-mode screenshot must be inverted before decoding.
+        work = img
+        if median < 128:
+            from PIL import ImageOps
+            work = ImageOps.invert(img.convert("RGB"))
+        if len(bands) > _MAX_BANDS:
+            # Merge consecutive bands into _MAX_BANDS contiguous groups so a
+            # dense page doesn't explode into hundreds of decode calls.
+            merged: list[tuple[int, int]] = []
+            step = len(bands) / _MAX_BANDS
+            for i in range(_MAX_BANDS):
+                lo = bands[int(i * step)][0]
+                hi = bands[min(len(bands) - 1, int((i + 1) * step) - 1)][1]
+                if i > 0 and lo <= merged[-1][1]:
+                    lo = merged[-1][1] + 1
+                merged.append((lo, hi))
+            bands = merged
+        w, h = img.size
+        texts: list[str] = []
+        for y0, y1 in bands:
+            band = _trim_to_ink(
+                work.crop((0, max(0, y0 - 5), w, min(h, y1 + 5))), median)
+            if band is None:
+                continue
+            pieces = [band]
+            if band.width > _BAND_CHUNK_PX:
+                n = -(-band.width // _BAND_CHUNK_PX)  # ceil division
+                pieces = [band.crop((int(band.width * i / n), 0,
+                                     int(band.width * (i + 1) / n),
+                                     band.height)) for i in range(n)]
+            for piece in pieces:
+                text = ocr_pil(piece)
+                if text:
+                    texts.append(text)
+        return "\n".join(texts)
+    except Exception:
+        return ""
+
+
 def ocr_image(path: Path) -> str:
+    # Wide/tall images (screenshots, photos of documents) are squeezed to
+    # 384x384 by the OCR encoder — route them through the banded path so each
+    # text line is OCR'd near its native resolution. Guarded: any failure in
+    # sizing/banding falls through to the whole-image path below.
+    try:
+        from PIL import Image
+        with Image.open(path) as probe:
+            large = probe.width > _BAND_THRESHOLD_PX or \
+                probe.height > _BAND_THRESHOLD_PX
+        if large:
+            with Image.open(path) as im:
+                text = ocr_image_banded(im)
+            if text:
+                return text[:2000]
+    except Exception:
+        pass
     # 1. TrOCR ONNX path (models downloaded via setup_models --trocr).
     trocr = _try_trocr()
     if trocr is not None:

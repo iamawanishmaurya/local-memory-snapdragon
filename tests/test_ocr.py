@@ -121,3 +121,131 @@ def test_preprocess_shape_and_normalization():
     assert arr.dtype == np.float32
     means = arr.reshape(3, -1).mean(axis=1)
     assert np.all(np.abs(means) < 0.05), f"per-channel means not ~0: {means}"
+
+
+# ---------------------------------------------------------------- test e ----
+def test_wide_image_uses_banded_ocr(monkeypatch):
+    """A wide image must be split into text-line bands and OCR'd per band,
+    not fed whole to the encoder (which squeezes it to 384x384)."""
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", (1600, 720), "white")
+    draw = ImageDraw.Draw(img)
+    for i in range(6):
+        draw.rectangle([20, 60 + i * 110, 1580, 100 + i * 110], fill="black")
+
+    calls: list[tuple[int, int]] = []
+
+    def fake_ocr_pil(crop):
+        calls.append(crop.size)
+        return "line"
+
+    monkeypatch.setattr(ocr, "ocr_pil", fake_ocr_pil)
+    text = ocr.ocr_image_banded(img)
+    # 6 bands, each ink-trimmed to ~1570px wide -> 2 vertical chunks each.
+    assert len(calls) == 12, calls
+    assert text == "\n".join(["line"] * 12)
+    # Each call is a horizontal slice of the full width, far shorter than
+    # the whole 720px image, and no wider than the chunk cap (+pad slack).
+    assert all(h < 720 for (_, h) in calls), calls
+    assert all(w <= ocr._BAND_CHUNK_PX + 20 for (w, _) in calls), calls
+
+
+def test_medium_band_not_split_or_trimmed_to_death(monkeypatch):
+    """A medium-wide image whose single text run is < _BAND_CHUNK_PX must
+    OCR as ONE whole band: trimming happens first, so chunk boundaries must
+    never cut through a short text line."""
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", (900, 140), "white")
+    ImageDraw.Draw(img).rectangle([100, 50, 600, 90], fill="black")
+
+    calls: list[tuple[int, int]] = []
+
+    def fake_ocr_pil(crop):
+        calls.append(crop.size)
+        return "line"
+
+    monkeypatch.setattr(ocr, "ocr_pil", fake_ocr_pil)
+    ocr.ocr_image_banded(img)
+    assert len(calls) == 1, calls
+    # trimmed to the ink box (500px + padding), not the blank 900px canvas
+    w, h = calls[0]
+    assert 480 <= w <= 540, calls
+
+
+def test_dark_mode_image_inverted_before_ocr(monkeypatch):
+    """Dark-mode screenshots (light text on dark ground) must be inverted
+    before ocr_pil: TrOCR is trained on dark text on a light background."""
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", (400, 120), "black")
+    # a single text-height stroke (>= 10 rows so _text_line_bands emits a
+    # band), thin enough that the ink-trimmed crop stays mostly light after
+    # inversion
+    ImageDraw.Draw(img).rectangle([50, 40, 350, 54], fill="white")
+
+    means: list[float] = []
+
+    def fake_ocr_pil(crop):
+        means.append(float(np.asarray(crop.convert("L")).mean()))
+        return "line"
+
+    monkeypatch.setattr(ocr, "ocr_pil", fake_ocr_pil)
+    text = ocr.ocr_image_banded(img)
+    assert text == "line"
+    assert means and all(m > 128 for m in means), means
+
+
+def test_blank_band_rows_are_skipped(monkeypatch):
+    """Bands whose ink is too sparse (< 30 ink px) are dropped instead of
+    burning an OCR call that would only return noise."""
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", (600, 200), "white")
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([50, 20, 550, 60], fill="black")   # real line
+    draw.rectangle([290, 120, 294, 124], fill="black")  # 4x4 speck: rows hold
+    # <=5 ink px so _text_line_bands never emits a band for it
+
+    calls: list[tuple[int, int]] = []
+
+    def fake_ocr_pil(crop):
+        calls.append(crop.size)
+        return "line"
+
+    monkeypatch.setattr(ocr, "ocr_pil", fake_ocr_pil)
+    ocr.ocr_image_banded(img)
+    assert len(calls) == 1, calls  # only the real line; the speck is skipped
+
+
+def test_wide_image_ocr_image_routes_banded(monkeypatch, tmp_path):
+    """ocr_image must route images larger than the band threshold through
+    ocr_image_banded rather than a single whole-image OCR call."""
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", (1600, 200), "white")
+    ImageDraw.Draw(img).rectangle([20, 60, 1580, 120], fill="black")
+    png = tmp_path / "wide.png"
+    img.save(png)
+
+    banded_calls: list = []
+    whole_calls: list = []
+
+    monkeypatch.setattr(ocr, "ocr_image_banded",
+                        lambda im: (banded_calls.append(im), "banded")[1])
+    monkeypatch.setattr(ocr, "_ocr_pil_trocr",
+                        lambda *a, **k: whole_calls.append(a) or "whole")
+    monkeypatch.setattr(ocr, "_try_trocr",
+                        lambda: (object(), object(), {}, 1))
+    text = ocr.ocr_image(png)
+    assert text == "banded"
+    assert len(banded_calls) == 1 and not whole_calls
+
+    # A small image still goes through the whole-image path.
+    small = tmp_path / "small.png"
+    Image.new("RGB", (200, 100), "white").save(small)
+    banded_calls.clear()
+    text = ocr.ocr_image(small)
+    assert text == "whole" and not banded_calls

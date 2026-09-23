@@ -89,9 +89,9 @@ def _ocr_pdf_page_render(path: Path, page_index: int) -> str:
     Fallback for image-only PDFs whose embedded images pypdf cannot decode
     (e.g. Windows print-to-PDF output). The OCR backends are line-level
     models — a whole page squeezed to their input size yields garbage — so
-    the render is split into horizontal text bands (dark-pixel row runs)
-    and each band is OCR'd separately. '' on any failure; pymupdf itself is
-    an optional dependency so a missing wheel degrades silently.
+    the render is split into horizontal text bands via the shared
+    `ocr.ocr_image_banded` helper. '' on any failure; pymupdf itself is an
+    optional dependency so a missing wheel degrades silently.
     """
     try:
         import io
@@ -100,7 +100,6 @@ def _ocr_pdf_page_render(path: Path, page_index: int) -> str:
             import pymupdf as fitz  # PyMuPDF — lazy/optional import
         except ImportError:  # older wheels only expose the legacy name
             import fitz
-        import numpy as np
         from PIL import Image
 
         from . import ocr
@@ -110,31 +109,7 @@ def _ocr_pdf_page_render(path: Path, page_index: int) -> str:
             page = doc.load_page(page_index)
             png = page.get_pixmap(dpi=150).tobytes("png")
         pil = Image.open(io.BytesIO(png))
-        gray = np.asarray(pil.convert("L"))
-        dark_rows = (gray < 128).sum(axis=1)
-        # Text-line bands = runs of rows containing dark pixels, each padded,
-        # so the OCR model sees lines at near-native resolution.
-        bands: list[tuple[int, int]] = []
-        start = None
-        for y, count in enumerate(dark_rows):
-            if count > 5 and start is None:
-                start = y
-            elif count <= 5 and start is not None:
-                if y - start >= 10:
-                    bands.append((start, y))
-                start = None
-        if start is not None and len(dark_rows) - start >= 10:
-            bands.append((start, len(dark_rows)))
-        if not bands:  # blank page or odd render — try the full page once
-            return ocr.ocr_pil(pil)
-        w, h = pil.size
-        texts: list[str] = []
-        for y0, y1 in bands:
-            crop = pil.crop((0, max(0, y0 - 5), w, min(h, y1 + 5)))
-            text = ocr.ocr_pil(crop)
-            if text:
-                texts.append(text)
-        return "\n".join(texts)
+        return ocr.ocr_image_banded(pil)
     except ImportError:
         log.debug("pymupdf not installed — render-based PDF OCR skipped")
         return ""
