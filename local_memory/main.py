@@ -133,6 +133,29 @@ def doctor() -> None:
         print("  fts index      : unavailable")
 
 
+def _setup_file_logging() -> None:
+    """Persist warnings/errors (incl. unhandled 500 tracebacks) to a rotating
+    log under the data home — stderr is lost when the launching console goes
+    away, which makes intermittent server errors undiagnosable."""
+    from logging.handlers import RotatingFileHandler
+    from . import config
+    try:
+        log_dir = config.DATA_HOME / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            log_dir / "server.log", maxBytes=1_000_000, backupCount=2, encoding="utf-8"
+        )
+        handler.setLevel(logging.WARNING)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+        logging.getLogger().addHandler(handler)
+        # uvicorn logs ASGI exceptions on its own loggers, which do not
+        # propagate to root by default.
+        for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+            logging.getLogger(name).addHandler(handler)
+    except OSError:
+        pass  # never block startup on logging
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="local-memory")
     parser.add_argument("--doctor", action="store_true", help="print NPU/provider diagnostics and exit")
@@ -157,6 +180,7 @@ def main() -> None:
         fail_fast()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    _setup_file_logging()
 
     if args.doctor:
         doctor()
