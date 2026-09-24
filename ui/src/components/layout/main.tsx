@@ -14,7 +14,8 @@ export function Main({ fixed, className, fluid, ...props }: MainProps) {
         'px-4 py-6',
 
         // If layout is fixed, make the main container flex and grow
-        fixed && 'flex grow flex-col overflow-hidden',
+        // (scrollable: pages put long content directly in here)
+        fixed && 'flex grow flex-col overflow-y-auto',
 
         // If layout is not fluid, set the max-width
         !fluid &&
