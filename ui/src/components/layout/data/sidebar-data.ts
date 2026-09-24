@@ -68,11 +68,6 @@ export const sidebarData: SidebarData = {
           icon: Settings,
           items: [
             {
-              title: 'Privacy & Data',
-              url: '/settings',
-              icon: ShieldCheck,
-            },
-            {
               title: 'Appearance',
               url: '/settings/appearance',
               icon: Palette,
