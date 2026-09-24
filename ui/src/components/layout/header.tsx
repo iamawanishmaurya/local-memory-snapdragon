@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { Separator } from '@/components/ui/separator'
 import { SidebarTrigger } from '@/components/ui/sidebar'
+import { LocalPrivateBadge } from '@/components/layout/local-private-badge'
 
 type HeaderProps = React.HTMLAttributes<HTMLElement> & {
   fixed?: boolean
@@ -43,6 +44,7 @@ export function Header({ className, fixed, children, ...props }: HeaderProps) {
       >
         <SidebarTrigger variant='outline' className='max-md:scale-125' />
         <Separator orientation='vertical' className='h-6' />
+        <LocalPrivateBadge className='hidden sm:inline-flex' />
         {children}
       </div>
     </header>

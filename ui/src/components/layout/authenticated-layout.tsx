@@ -6,7 +6,6 @@ import { SearchProvider } from '@/context/search-provider'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { AppSidebar } from '@/components/layout/app-sidebar'
 import { SkipToMain } from '@/components/skip-to-main'
-import { LocalPrivateBadge } from '@/components/layout/local-private-badge'
 
 type AuthenticatedLayoutProps = {
   children?: React.ReactNode
@@ -34,10 +33,6 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
               'peer-data-[variant=inset]:has-data-[layout=fixed]:h-[calc(100svh-(var(--spacing)*4))]'
             )}
           >
-            {/* Privacy proof (D-06): shows only once an authenticated /api/status succeeds. */}
-            <div className='pointer-events-none absolute right-4 top-4 z-50'>
-              <LocalPrivateBadge />
-            </div>
             {children ?? <Outlet />}
           </SidebarInset>
         </SidebarProvider>
